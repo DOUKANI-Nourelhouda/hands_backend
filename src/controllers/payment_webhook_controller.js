@@ -1,13 +1,19 @@
+const mongoose = require("mongoose");
 const crypto = require("crypto");
 
 const Purchase = require("../models/Purchase");
-const User = require("../models/User");
+const { User } = require("../models/User");
 
 const handleChargilyWebhook = async (req, res) => {
-  try {
+  console.log("🔥 CHARGILY WEBHOOK RECEIVED");
+  console.log("Method:", req.method);
+  console.log("URL:", req.originalUrl);
+  console.log("Headers:", req.headers);
 
+  try {
+    // =========================================================
     // 1. Get Chargily signature
-  
+    // =========================================================
 
     const receivedSignature = req.headers["signature"];
 
@@ -19,23 +25,25 @@ const handleChargilyWebhook = async (req, res) => {
       });
     }
 
-  
+    // =========================================================
     // 2. Get RAW request body
-   
+    // =========================================================
 
     const rawBody = req.body;
 
     if (!Buffer.isBuffer(rawBody)) {
-      console.error("Chargily webhook: body is not raw Buffer");
+      console.error(
+        "Chargily webhook: body is not raw Buffer"
+      );
 
       return res.status(400).json({
         message: "Invalid webhook body",
       });
     }
 
-   
+    // =========================================================
     // 3. Calculate HMAC SHA256
-  
+    // =========================================================
 
     const expectedSignature = crypto
       .createHmac(
@@ -45,9 +53,9 @@ const handleChargilyWebhook = async (req, res) => {
       .update(rawBody)
       .digest("hex");
 
-   
+    // =========================================================
     // 4. Securely compare signatures
-   
+    // =========================================================
 
     const receivedBuffer = Buffer.from(receivedSignature);
     const expectedBuffer = Buffer.from(expectedSignature);
@@ -59,24 +67,31 @@ const handleChargilyWebhook = async (req, res) => {
         expectedBuffer
       )
     ) {
-      console.log("Chargily webhook: invalid signature");
+      console.log(
+        "Chargily webhook: invalid signature"
+      );
 
       return res.status(403).json({
         message: "Invalid signature",
       });
     }
 
-  
+    // =========================================================
     // 5. Parse JSON
-   
+    // =========================================================
 
-    const event = JSON.parse(rawBody.toString("utf8"));
+    const event = JSON.parse(
+      rawBody.toString("utf8")
+    );
 
-    console.log("Chargily webhook event:", event.type);
+    console.log(
+      "Chargily webhook event:",
+      event.type
+    );
 
- 
+    // =========================================================
     // 6. Handle successful payment
-   
+    // =========================================================
 
     if (event.type === "checkout.paid") {
       const checkout = event.data;
@@ -94,87 +109,137 @@ const handleChargilyWebhook = async (req, res) => {
         });
       }
 
-    
-      // 7. Find purchase
-   
+      // =======================================================
+      // 7. Start MongoDB transaction
+      // =======================================================
 
-      const purchase = await Purchase.findById(
-        purchaseId
-      );
+      const session = await mongoose.startSession();
 
-      if (!purchase) {
-        console.error(
-          "Chargily webhook: purchase not found:",
+      try {
+        session.startTransaction();
+
+        // =====================================================
+        // 8. Find purchase INSIDE transaction
+        // =====================================================
+
+        const purchase = await Purchase.findById(
           purchaseId
-        );
+        ).session(session);
 
-        return res.status(404).json({
-          message: "Purchase not found",
-        });
-      }
+        if (!purchase) {
+          console.error(
+            "Chargily webhook: purchase not found:",
+            purchaseId
+          );
 
-     
-      // 8. Prevent duplicate credits
-     
+          await session.abortTransaction();
 
-      if (purchase.status === "paid") {
+          return res.status(404).json({
+            message: "Purchase not found",
+          });
+        }
+
+        // =====================================================
+        // 9. Idempotency check
+        // =====================================================
+
+        if (purchase.status === "paid") {
+          console.log(
+            "Chargily webhook: payment already processed"
+          );
+
+          await session.abortTransaction();
+
+          return res.status(200).json({
+            message: "Already processed",
+          });
+        }
+
+        // =====================================================
+        // 10. Find user INSIDE transaction
+        // =====================================================
+
+        const user = await User.findById(
+          purchase.user
+        ).session(session);
+
+        if (!user) {
+          console.error(
+            "Chargily webhook: user not found"
+          );
+
+          await session.abortTransaction();
+
+          return res.status(404).json({
+            message: "User not found",
+          });
+        }
+
+        // =====================================================
+        // 11. Update purchase
+        // =====================================================
+
+        purchase.status = "paid";
+
+        purchase.chargilyPaymentId =
+          checkout.id;
+
+        purchase.paidAt = new Date();
+
+        // =====================================================
+        // 12. Add post credits
+        // =====================================================
+
+        user.paidPostCredits =
+          (user.paidPostCredits || 0) +
+          purchase.postsPurchased;
+
+        // =====================================================
+        // 13. Save BOTH using same transaction
+        // =====================================================
+
+        await user.save({ session });
+
+        await purchase.save({ session });
+
+        // =====================================================
+        // 14. Commit transaction
+        // =====================================================
+
+        await session.commitTransaction();
+
         console.log(
-          "Chargily webhook: payment already processed"
+          `Payment successful: +${purchase.postsPurchased} posts for user ${user._id}`
         );
 
         return res.status(200).json({
-          message: "Already processed",
+          message: "Payment processed successfully",
         });
-      }
 
-    
-      // 9. Find user
-   
+      } catch (transactionError) {
+        // =====================================================
+        // Rollback everything
+        // =====================================================
 
-      const user = await User.findById(
-        purchase.user
-      );
+        await session.abortTransaction();
 
-      if (!user) {
         console.error(
-          "Chargily webhook: user not found"
+          "Chargily webhook transaction failed:",
+          transactionError
         );
 
-        return res.status(404).json({
-          message: "User not found",
+        return res.status(500).json({
+          message: "Payment transaction failed",
         });
+
+      } finally {
+        session.endSession();
       }
-
-   
-      // 10. Mark purchase as paid
-   
-
-      purchase.status = "paid";
-      purchase.chargilyPaymentId = checkout.id;
-
-     
-      // 11. Add post credits
-  
-
-      user.paidPostCredits =
-        (user.paidPostCredits || 0) +
-        purchase.postsPurchased;
-
-      await user.save();
-      await purchase.save();
-
-      console.log(
-        `Payment successful: +${purchase.postsPurchased} posts for user ${user._id}`
-      );
-
-      return res.status(200).json({
-        message: "Payment processed successfully",
-      });
     }
 
-    
-    // 12. Handle failed payment
-   
+    // =========================================================
+    // 15. Handle failed payment
+    // =========================================================
 
     if (event.type === "checkout.failed") {
       const checkout = event.data;
@@ -197,7 +262,9 @@ const handleChargilyWebhook = async (req, res) => {
       });
     }
 
-   
+    // =========================================================
+    // 16. Unknown event
+    // =========================================================
 
     console.log(
       "Chargily webhook: unhandled event:",
@@ -207,6 +274,7 @@ const handleChargilyWebhook = async (req, res) => {
     return res.status(200).json({
       message: "Event received",
     });
+
   } catch (error) {
     console.error(
       "Chargily webhook error:",

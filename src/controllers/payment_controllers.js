@@ -59,17 +59,12 @@ const createPostPackagePayment = async (req, res) => {
       description:
         `${selectedPackage.posts} Servisy post credits`,
 
-      metadata: [
-        {
-          purchaseId: purchase._id.toString(),
-
-          userId: userId.toString(),
-
-          packageId,
-
-          posts: selectedPackage.posts,
-        },
-      ],
+      metadata: {
+  purchaseId: purchase._id.toString(),
+  userId: userId.toString(),
+  packageId,
+  posts: selectedPackage.posts,
+},
     });
 console.log(JSON.stringify(checkout, null, 2));
     // -----------------------------
@@ -100,7 +95,7 @@ console.log(JSON.stringify(checkout, null, 2));
       checkout: {
         id: checkout.id,
 
-       url: checkout.url,
+      url: checkout.checkout_url,
       },
     });
  } catch (error) {

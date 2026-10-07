@@ -7,14 +7,12 @@ const asyncHandler = require("express-async-handler");
 const Message = require("../models/Message.js");
 const Conversation = require("../models/Conversation.js");
 const { User } = require("../models/User.js");
-
+const { notifyMessage } = require("../services/notification_service.js");
 const { verifyToken } = require("../middlewares/verifyToken");
 
 
-// ======================================================
+
 // SEND MESSAGE
-// POST /api/messages/:conversationId
-// ======================================================
 
 router.post(
   "/:conversationId",
@@ -33,10 +31,7 @@ router.post(
       });
     }
 
-    // ==========================================
-    // CHECK PARTICIPATION
-    // ==========================================
-
+    
     const isParticipant = conversation.participants.some(
       (userId) => userId.toString() === req.user.id
     );
@@ -47,10 +42,7 @@ router.post(
       });
     }
 
-    // ==========================================
-    // FIND RECEIVER
-    // ==========================================
-
+  
     const receiver = conversation.participants.find(
       (userId) => userId.toString() !== req.user.id
     );
@@ -61,20 +53,14 @@ router.post(
       });
     }
 
-    // ==========================================
-    // CHECK MESSAGE CONTENT
-    // ==========================================
-
+    
     if (!content && !picture) {
       return res.status(400).json({
         message: "Message must contain text or picture",
       });
     }
 
-    // ==========================================
-    // VERIFY SAME RESIDENCE
-    // ==========================================
-
+   
     const senderUser = await User.findById(req.user.id);
     const receiverUser = await User.findById(receiver);
 
@@ -95,10 +81,6 @@ router.post(
       });
     }
 
-    // ==========================================
-    // CREATE MESSAGE
-    // ==========================================
-
     const message = await Message.create({
       conversation: conversation._id,
       sender: req.user.id,
@@ -114,6 +96,13 @@ router.post(
     const populatedMessage = await Message.findById(message._id)
       .populate("sender", "username profilePicture")
       .populate("receiver", "username profilePicture");
+
+    await notifyMessage({
+      recipient: receiver,
+      sender: req.user.id,
+      conversation: conversation._id,
+      message: message._id
+    });
 
     res.status(201).json(populatedMessage);
   })

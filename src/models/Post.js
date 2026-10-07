@@ -3,19 +3,44 @@ const mongoose = require("mongoose");
 const postSchema = new mongoose.Schema(
   {
 
-    category : {
-      type: String,
-      required: true,
-      trim: true,
-      max: 300,
-      default: "General"
-    },
+    category: {
+  type: String,
+  required: true,
+  enum: [
+    "Food",
+    "Beauty",
+    "Sports",
+    "Delivery",
+    "Printing & Copying",
+    "Sewing",
+    "Phone & PC Repair",
+    "Tutoring",
+    "Graphic Design",
+    "Photography",
+    "Video Editing",
+    "Hairdressing",
+    "Makeup",
+    "Cleaning",
+    "Laundry",
+    "Transportation",
+    "Handmade",
+    "Electronics",
+    "Clothing",
+    "Accessories",
+    "Translation",
+    "Writing",
+    "Programming",
+    "Other",
+  ],
+  trim: true,
+  
+},
 
      caption : {
       type: String,
       required: true,
       trim: true,
-      max: 300
+      maxlength: 300
     },
 
     picture: {

@@ -5,8 +5,27 @@ const asyncHandler = require("express-async-handler");
 const { User } = require("../models/User.js");
 const Post = require("../models/Post.js");
 const { verifyToken } = require("../middlewares/verifyToken");
-const { checkBlocked } = require("../middlewares/checkBlocked");
+const { notifyFollow } = require("../services/notification_service.js");
 
+
+const escapeRegex = (text) => {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+};
+
+const getPagination = (req) => {
+  let page = parseInt(req.query.page) || 1;
+  let limit = parseInt(req.query.limit) || 10;
+
+  if (page < 1) page = 1;
+  if (limit < 1) limit = 10;
+  if (limit > 30) limit = 30;
+
+  return {
+    page,
+    limit,
+    skip: (page - 1) * limit,
+  };
+};
 
 // GET MY PROFILE
 router.get(
@@ -28,6 +47,85 @@ router.get(
   })
 );
 
+
+// SEARCH USERS
+router.get(
+  "/search",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const q = req.query.q;
+
+    if (!q || q.trim() === "") {
+      return res.status(400).json({
+        message: "Search query is required",
+      });
+    }
+
+    if (q.trim().length > 100) {
+      return res.status(400).json({
+        message: "Search query must not exceed 100 characters",
+      });
+    }
+
+    const currentUser = await User.findById(req.user.id)
+      .select("residence blockedUsers");
+
+    if (!currentUser) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const { page, limit, skip } = getPagination(req);
+
+    const safeSearch = escapeRegex(q.trim());
+
+    // Users who blocked me
+    const usersWhoBlockedMe = await User.find({
+      blockedUsers: currentUser._id,
+    }).select("_id");
+
+    const blockedByIds = usersWhoBlockedMe.map((user) => user._id);
+
+    const excludedIds = [
+      ...currentUser.blockedUsers,
+      ...blockedByIds,
+    ];
+
+    const filter = {
+      username: {
+        $regex: safeSearch,
+        $options: "i",
+      },
+
+      residence: currentUser.residence,
+
+      _id: {
+        $nin: excludedIds,
+      },
+    };
+
+    const totalUsers = await User.countDocuments(filter);
+
+    const users = await User.find(filter)
+      .select("username profilePicture bio residence followers following")
+      .populate("residence", "name wilaya")
+      .sort({ username: 1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.status(200).json({
+      page,
+      limit,
+      totalUsers,
+      totalPages: Math.ceil(totalUsers / limit),
+      hasNextPage: page < Math.ceil(totalUsers / limit),
+      hasPreviousPage: page > 1,
+      count: users.length,
+      users,
+    });
+  })
+);
 
 
 // GET USER PROFILE
@@ -120,7 +218,6 @@ router.post(
   "/:userId/follow",
   verifyToken,
   asyncHandler(async (req, res) => {
-
     const currentUserId = req.user.id;
     const targetUserId = req.params.userId;
 
@@ -130,8 +227,17 @@ router.post(
       });
     }
 
-    const currentUser = await User.findById(currentUserId);
-    const targetUser = await User.findById(targetUserId);
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({
+        message: "Invalid user ID",
+      });
+    }
+
+    const currentUser = await User.findById(currentUserId)
+      .select("residence following followers blockedUsers");
+
+    const targetUser = await User.findById(targetUserId)
+      .select("residence following followers blockedUsers");
 
     if (!currentUser || !targetUser) {
       return res.status(404).json({
@@ -139,23 +245,28 @@ router.post(
       });
     }
 
-    const blocked = await checkBlocked(
-      currentUserId,
-      targetUserId
-    );
-
-    if (blocked.blocked) {
-      return res.status(403).json({
-        message: blocked.reason,
-      });
-    }
-
+    
     if (
       currentUser.residence.toString() !==
       targetUser.residence.toString()
     ) {
       return res.status(403).json({
         message: "You can only follow users from your residence",
+      });
+    }
+
+    // Block check
+    const youBlockedThem = currentUser.blockedUsers.some(
+      (id) => id.toString() === targetUserId
+    );
+
+    const theyBlockedYou = targetUser.blockedUsers.some(
+      (id) => id.toString() === currentUserId
+    );
+
+    if (youBlockedThem || theyBlockedYou) {
+      return res.status(403).json({
+        message: "You cannot follow this user",
       });
     }
 
@@ -169,15 +280,46 @@ router.post(
       });
     }
 
-    currentUser.following.push(targetUserId);
-    targetUser.followers.push(currentUserId);
+    const session = await mongoose.startSession();
 
-    await currentUser.save();
-    await targetUser.save();
+    try {
+      session.startTransaction();
 
-    res.status(200).json({
-      message: "User followed successfully",
-    });
+      await User.findByIdAndUpdate(
+        currentUserId,
+        {
+          $addToSet: {
+            following: targetUserId,
+          },
+        },
+        { session }
+      );
+
+      await User.findByIdAndUpdate(
+        targetUserId,
+        {
+          $addToSet: {
+            followers: currentUserId,
+          },
+        },
+        { session }
+      );
+await notifyFollow({
+  recipient: userId,
+  sender: req.user.id,
+});
+      await session.commitTransaction();
+
+      res.status(200).json({
+        message: "User followed successfully",
+        isFollowing: true,
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
   })
 );
 
@@ -187,11 +329,17 @@ router.delete(
   "/:userId/follow",
   verifyToken,
   asyncHandler(async (req, res) => {
-
     const currentUserId = req.user.id;
     const targetUserId = req.params.userId;
 
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({
+        message: "Invalid user ID",
+      });
+    }
+
     const currentUser = await User.findById(currentUserId);
+
     const targetUser = await User.findById(targetUserId);
 
     if (!currentUser || !targetUser) {
@@ -200,81 +348,186 @@ router.delete(
       });
     }
 
-    currentUser.following = currentUser.following.filter(
-      (id) => id.toString() !== targetUserId
-    );
+    const session = await mongoose.startSession();
 
-    targetUser.followers = targetUser.followers.filter(
-      (id) => id.toString() !== currentUserId
-    );
+    try {
+      session.startTransaction();
 
-    await currentUser.save();
-    await targetUser.save();
+      await User.findByIdAndUpdate(
+        currentUserId,
+        {
+          $pull: {
+            following: targetUserId,
+          },
+        },
+        { session }
+      );
 
-    res.status(200).json({
-      message: "User unfollowed successfully",
-    });
+      await User.findByIdAndUpdate(
+        targetUserId,
+        {
+          $pull: {
+            followers: currentUserId,
+          },
+        },
+        { session }
+      );
+
+      await session.commitTransaction();
+
+      res.status(200).json({
+        message: "User unfollowed successfully",
+        isFollowing: false,
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
   })
 );
 
 
-// ============================================================
 // GET FOLLOWERS
-// GET /api/users/:userId/followers
-// ============================================================
-
 router.get(
   "/:userId/followers",
   verifyToken,
   asyncHandler(async (req, res) => {
+    const currentUser = await User.findById(req.user.id)
+      .select("residence blockedUsers");
 
     const user = await User.findById(req.params.userId)
-      .select("followers")
-      .populate(
-        "followers",
-        "username profilePicture bio residence"
-      );
+      .select("followers residence blockedUsers");
 
-    if (!user) {
+    if (!currentUser || !user) {
       return res.status(404).json({
         message: "User not found",
       });
     }
 
+    if (
+      currentUser.residence.toString() !==
+      user.residence.toString()
+    ) {
+      return res.status(403).json({
+        message: "You can only view users from your residence",
+      });
+    }
+
+    // Profile owner blocked the current user
+    const ownerBlockedViewer = user.blockedUsers.some(
+      (id) => id.toString() === currentUser._id.toString()
+    );
+
+    // Current user blocked the profile owner
+    const viewerBlockedOwner = currentUser.blockedUsers.some(
+      (id) => id.toString() === user._id.toString()
+    );
+
+    if (ownerBlockedViewer || viewerBlockedOwner) {
+      return res.status(403).json({
+        message: "You cannot view this list",
+      });
+    }
+
+    const usersWhoBlockedMe = await User.find({
+      blockedUsers: currentUser._id,
+    }).select("_id");
+
+    const blockedByIds = usersWhoBlockedMe.map((u) => u._id);
+
+    const excludedIds = [
+      ...currentUser.blockedUsers,
+      ...blockedByIds,
+      ...user.blockedUsers,
+    ];
+
+    const followers = await User.find({
+      _id: {
+        $in: user.followers,
+        $nin: excludedIds,
+      },
+      residence: currentUser.residence,
+    })
+      .select("username profilePicture bio residence")
+      .populate("residence", "name wilaya");
+
     res.status(200).json({
-      count: user.followers.length,
-      followers: user.followers,
+      count: followers.length,
+      followers,
     });
   })
 );
-
 
 // GET FOLLOWING
 router.get(
   "/:userId/following",
   verifyToken,
   asyncHandler(async (req, res) => {
+    const currentUser = await User.findById(req.user.id)
+      .select("residence blockedUsers");
 
     const user = await User.findById(req.params.userId)
-      .select("following")
-      .populate(
-        "following",
-        "username profilePicture bio residence"
-      );
+      .select("following residence blockedUsers");
 
-    if (!user) {
+    if (!currentUser || !user) {
       return res.status(404).json({
         message: "User not found",
       });
     }
 
+    if (
+      currentUser.residence.toString() !==
+      user.residence.toString()
+    ) {
+      return res.status(403).json({
+        message: "You can only view users from your residence",
+      });
+    }
+
+    const ownerBlockedViewer = user.blockedUsers.some(
+      (id) => id.toString() === currentUser._id.toString()
+    );
+
+    const viewerBlockedOwner = currentUser.blockedUsers.some(
+      (id) => id.toString() === user._id.toString()
+    );
+
+    if (ownerBlockedViewer || viewerBlockedOwner) {
+      return res.status(403).json({
+        message: "You cannot view this list",
+      });
+    }
+
+    const usersWhoBlockedMe = await User.find({
+      blockedUsers: currentUser._id,
+    }).select("_id");
+
+    const blockedByIds = usersWhoBlockedMe.map((u) => u._id);
+
+    const excludedIds = [
+      ...currentUser.blockedUsers,
+      ...blockedByIds,
+      ...user.blockedUsers,
+    ];
+
+    const following = await User.find({
+      _id: {
+        $in: user.following,
+        $nin: excludedIds,
+      },
+      residence: currentUser.residence,
+    })
+      .select("username profilePicture bio residence")
+      .populate("residence", "name wilaya");
+
     res.status(200).json({
-      count: user.following.length,
-      following: user.following,
+      count: following.length,
+      following,
     });
   })
 );
-
 
 
 // CHECK FOLLOW STATUS
@@ -311,18 +564,22 @@ router.get(
 );
 
 // BLOCK USER
-
 router.post(
   "/:userId/block",
   verifyToken,
   asyncHandler(async (req, res) => {
-
     const currentUserId = req.user.id;
     const targetUserId = req.params.userId;
 
     if (currentUserId === targetUserId) {
       return res.status(400).json({
         message: "You cannot block yourself",
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({
+        message: "Invalid user ID",
       });
     }
 
@@ -345,35 +602,74 @@ router.post(
       });
     }
 
-    // Remove follow relationship
-    currentUser.following = currentUser.following.filter(
-      (id) => id.toString() !== targetUserId
-    );
+    const session = await mongoose.startSession();
 
-    targetUser.followers = targetUser.followers.filter(
-      (id) => id.toString() !== currentUserId
-    );
+    try {
+      session.startTransaction();
 
-    // Add to blocked users
-    currentUser.blockedUsers.push(targetUserId);
+      // Add target to my blocked list
+      await User.findByIdAndUpdate(
+        currentUserId,
+        {
+          $addToSet: {
+            blockedUsers: targetUserId,
+          },
 
-    await currentUser.save();
-    await targetUser.save();
+          // Remove target from my following/followers
+          $pull: {
+            following: targetUserId,
+            followers: targetUserId,
+          },
+        },
+        { session }
+      );
 
-    res.status(200).json({
-      message: "User blocked successfully",
-    });
+      // Remove me from target's following/followers
+      await User.findByIdAndUpdate(
+        targetUserId,
+        {
+          $pull: {
+            following: currentUserId,
+            followers: currentUserId,
+          },
+        },
+        { session }
+      );
+
+      await session.commitTransaction();
+
+      res.status(200).json({
+        message: "User blocked successfully",
+        isBlocked: true,
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
   })
 );
 
 
-
 // UNBLOCK USER
-
 router.delete(
   "/:userId/block",
   verifyToken,
   asyncHandler(async (req, res) => {
+    const targetUserId = req.params.userId;
+
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({
+        message: "Invalid user ID",
+      });
+    }
+
+    if (req.user.id === targetUserId) {
+      return res.status(400).json({
+        message: "You cannot unblock yourself",
+      });
+    }
 
     const currentUser = await User.findById(req.user.id);
 
@@ -383,18 +679,26 @@ router.delete(
       });
     }
 
-    currentUser.blockedUsers = currentUser.blockedUsers.filter(
-      (id) => id.toString() !== req.params.userId
-    );
+    const targetUser = await User.findById(targetUserId);
 
-    await currentUser.save();
+    if (!targetUser) {
+      return res.status(404).json({
+        message: "Target user not found",
+      });
+    }
+
+    await User.findByIdAndUpdate(req.user.id, {
+      $pull: {
+        blockedUsers: targetUserId,
+      },
+    });
 
     res.status(200).json({
       message: "User unblocked successfully",
+      isBlocked: false,
     });
   })
 );
-
 
 // GET MY BLOCKED USERS
 router.get(
@@ -425,17 +729,131 @@ router.get(
 
 // CHECK BLOCK STATUS
 router.get(
+  "/:userId/follow-status",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const currentUser = await User.findById(req.user.id)
+      .select("following followers blockedUsers");
+
+    const targetUser = await User.findById(req.params.userId)
+      .select("followers following blockedUsers");
+
+    if (!currentUser || !targetUser) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const targetId = req.params.userId;
+    const currentId = req.user.id;
+
+    const isFollowing = currentUser.following.some(
+      (id) => id.toString() === targetId
+    );
+
+    const followsYou = targetUser.following.some(
+      (id) => id.toString() === currentId
+    );
+
+    const youBlockedThem = currentUser.blockedUsers.some(
+      (id) => id.toString() === targetId
+    );
+
+    const theyBlockedYou = targetUser.blockedUsers.some(
+      (id) => id.toString() === currentId
+    );
+
+    res.status(200).json({
+      isFollowing,
+      followsYou,
+      youBlockedThem,
+      theyBlockedYou,
+    });
+  })
+);
+
+// GET USER POSTS
+router.get(
+  "/:userId/posts",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const currentUser = await User.findById(req.user.id)
+      .select("residence blockedUsers");
+
+    const targetUser = await User.findById(req.params.userId)
+      .select("residence blockedUsers");
+
+    if (!currentUser || !targetUser) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    if (
+      currentUser.residence.toString() !==
+      targetUser.residence.toString()
+    ) {
+      return res.status(403).json({
+        message: "You can only view posts from your residence",
+      });
+    }
+
+    const youBlockedThem = currentUser.blockedUsers.some(
+      (id) => id.toString() === targetUser._id.toString()
+    );
+
+    const theyBlockedYou = targetUser.blockedUsers.some(
+      (id) => id.toString() === currentUser._id.toString()
+    );
+
+    if (youBlockedThem || theyBlockedYou) {
+      return res.status(403).json({
+        message: "You cannot view these posts",
+      });
+    }
+
+    const { page, limit, skip } = getPagination(req);
+
+    const filter = {
+      user: targetUser._id,
+      residence: currentUser.residence,
+    };
+
+    const totalPosts = await Post.countDocuments(filter);
+
+    const posts = await Post.find(filter)
+      .populate("user", "username profilePicture")
+      .populate("residence", "name wilaya")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.status(200).json({
+      page,
+      limit,
+      totalPosts,
+      totalPages: Math.ceil(totalPosts / limit),
+      hasNextPage: page < Math.ceil(totalPosts / limit),
+      hasPreviousPage: page > 1,
+      count: posts.length,
+      posts,
+    });
+  })
+);
+
+
+// CHECK BLOCK STATUS
+router.get(
   "/:userId/block-status",
   verifyToken,
   asyncHandler(async (req, res) => {
-
     const currentUser = await User.findById(req.user.id)
       .select("blockedUsers");
 
     const targetUser = await User.findById(req.params.userId)
       .select("blockedUsers");
 
-    if (!targetUser) {
+    if (!currentUser || !targetUser) {
       return res.status(404).json({
         message: "User not found",
       });
@@ -455,66 +873,5 @@ router.get(
     });
   })
 );
-
-
-// GET USER POSTS
-router.get(
-  "/:userId/posts",
-  verifyToken,
-  asyncHandler(async (req, res) => {
-
-    const user = await User.findById(req.params.userId);
-
-    if (!user) {
-      return res.status(404).json({
-        message: "User not found",
-      });
-    }
-
-    const posts = await Post.find({
-      user: req.params.userId,
-    })
-      .populate("user", "username profilePicture")
-      .populate("residence", "name wilaya")
-      .sort({ createdAt: -1 });
-
-    res.status(200).json({
-      count: posts.length,
-      posts,
-    });
-  })
-);
-
-
-// SEARCH USERS
-router.get(
-  "/search",
-  verifyToken,
-  asyncHandler(async (req, res) => {
-
-    const q = req.query.q;
-
-    if (!q || q.trim() === "") {
-      return res.status(400).json({
-        message: "Search query is required",
-      });
-    }
-
-    const users = await User.find({
-      username: {
-        $regex: q,
-        $options: "i",
-      },
-    })
-      .select(
-        "username profilePicture bio residence followers following"
-      )
-      .populate("residence", "name wilaya")
-      .limit(20);
-
-    res.status(200).json(users);
-  })
-);
-
 
 module.exports = router;

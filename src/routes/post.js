@@ -1,65 +1,257 @@
 const express = require("express");
 const router = express.Router();
 const asyncHandler = require("express-async-handler");
-const { Post } = require("../models/Post.js");
+const  Post  = require("../models/Post.js");
 const { User } = require("../models/User.js");
 const Comment = require("../models/Comment.js");
 const { verifyToken } = require("../middlewares/verifyToken.js");
 const { checkBlocked } = require("../middlewares/checkBlocked");
+const { notifyComment,notifyLike } = require("../services/notification_service.js");
+const mongoose = require("mongoose");
+
+
+
+// Escape regex special characters
+const escapeRegex = (text) => {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+};
+
+
+// Get users that should be excluded because of blocking
+const getBlockedUserIds = async (userId) => {
+  const usersWhoBlockedMe = await User.find({
+    blockedUsers: userId,
+  }).select("_id");
+
+  return usersWhoBlockedMe.map((user) => user._id);
+};
+
+
+// Validate post input
+const validatePostInput = ({ category, caption, picture }) => {
+  if (
+    typeof category !== "string" ||
+    !category.trim()
+  ) {
+    return "Category is required";
+  }
+
+  if (
+    typeof caption !== "string" ||
+    !caption.trim()
+  ) {
+    return "Caption is required";
+  }
+
+  if (category.trim().length > 50) {
+    return "Category must not exceed 50 characters";
+  }
+
+  if (caption.trim().length > 1000) {
+    return "Caption must not exceed 1000 characters";
+  }
+
+  if (
+    picture !== undefined &&
+    picture !== null &&
+    typeof picture !== "string"
+  ) {
+    return "Picture must be a string";
+  }
+
+  if (
+    typeof picture === "string" &&
+    picture.length > 2000
+  ) {
+    return "Picture is too long";
+  }
+
+  return null;
+};
+
+
+
+
+// PAGINATION HELPER
+
+const getPagination = (req) => {
+  let page = parseInt(req.query.page) || 1;
+  let limit = parseInt(req.query.limit) || 10;
+
+  if (page < 1) {
+    page = 1;
+  }
+
+  if (limit < 1) {
+    limit = 10;
+  }
+
+  // Maximum 30 posts per request
+  if (limit > 30) {
+    limit = 30;
+  }
+
+  const skip = (page - 1) * limit;
+
+  return {
+    page,
+    limit,
+    skip,
+  };
+};
+
 
 
 // CREATE POST
-router.post("/", verifyToken, asyncHandler(async (req, res) => {
+router.post( "/", verifyToken, asyncHandler(async (req, res) => {
+    const { category, caption, picture } = req.body;
 
-  const { category, caption, picture } = req.body;
+    
 
-  if (!category || !caption) {
-    return res.status(400).json({
-      message: "Category and caption are required"
-    });
-  }
+    if (!category || !caption) {
+      return res.status(400).json({
+        message: "Category and caption are required",
+      });
+    }
 
-  const user = await User.findById(req.user.id);
 
-  if (!user) {
-    return res.status(404).json({
-      message: "User not found"
-    });
-  }
+    const user = await User.findById(req.user.id);
 
-  if (!user.residence) {
-    return res.status(400).json({
-      message: "You must have a residence before creating a post"
-    });
-  }
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
 
-  const post = new Post({
-    category,
-    caption,
-    picture: picture || "",
-    user: user._id,
-    residence: user.residence,
-    likes: [],
-    comments: []
-  });
+    if (!user.residence) {
+      return res.status(400).json({
+        message:
+          "You must have a residence before creating a post",
+      });
+    }
 
-  const savedPost = await post.save();
+    const FREE_POST_LIMIT = 3;
 
-  res.status(201).json({
-    message: "Post created successfully",
-    post: savedPost
-  });
+    let postType;
 
-}));
+    if (user.freePostsUsed < FREE_POST_LIMIT) {
+      postType = "free";
+    } else if (user.paidPostCredits > 0) {
+      postType = "paid";
+    } else {
+      return res.status(403).json({
+        message:
+          "You have no post credits left. Please purchase a post package.",
+      });
+    }
+
+    const session = await mongoose.startSession();
+
+    try {
+      session.startTransaction();
+
+  
+      let updatedUser;
+
+      if (postType === "free") {
+        updatedUser = await User.findOneAndUpdate(
+          {
+            _id: user._id,
+            freePostsUsed: { $lt: FREE_POST_LIMIT },
+          },
+          {
+            $inc: {
+              freePostsUsed: 1,
+            },
+          },
+          {
+            new: true,
+            session,
+          }
+        );
+      } else {
+        updatedUser = await User.findOneAndUpdate(
+          {
+            _id: user._id,
+            freePostsUsed: { $gte: FREE_POST_LIMIT },
+            paidPostCredits: { $gt: 0 },
+          },
+          {
+            $inc: {
+              paidPostCredits: -1,
+            },
+          },
+          {
+            new: true,
+            session,
+          }
+        );
+      }
+
+     
+      if (!updatedUser) {
+        await session.abortTransaction();
+
+        return res.status(409).json({
+          message:
+            "Post credit was already used. Please try again.",
+        });
+      }
+
+     
+      const post = new Post({
+        category,
+        caption,
+        picture: picture || "",
+        user: user._id,
+        residence: user.residence,
+        likes: [],
+        comments: [],
+      });
+
+      const savedPost = await post.save({ session });
+
+     
+      updatedUser.posts.push(savedPost._id);
+
+      await updatedUser.save({ session });
+
+      
+      await session.commitTransaction();
+
+      return res.status(201).json({
+        message: "Post created successfully",
+
+        postType,
+
+        remainingFreePosts:
+          FREE_POST_LIMIT -
+          updatedUser.freePostsUsed,
+
+        remainingPaidPostCredits:
+          updatedUser.paidPostCredits,
+
+        post: savedPost,
+      });
+
+    } catch (error) {
+     
+      await session.abortTransaction();
+
+      throw error;
+
+    } finally {
+      session.endSession();
+    }
+  })
+);
 
 
 
 // GET POSTS FROM MY RESIDENCE
-router.get(
-  "/",
-  verifyToken,
-  asyncHandler(async (req, res) => {
+// GET /api/posts?page=1&limit=10
 
+router.get( "/", verifyToken, asyncHandler(async (req, res) => {
     const currentUser = await User.findById(req.user.id)
       .select("residence blockedUsers");
 
@@ -68,6 +260,29 @@ router.get(
         message: "User not found",
       });
     }
+
+
+
+    let page = parseInt(req.query.page) || 1;
+    let limit = parseInt(req.query.limit) || 10;
+
+   
+    if (page < 1) {
+      page = 1;
+    }
+
+  
+    if (limit < 1) {
+      limit = 10;
+    }
+
+    if (limit > 30) {
+      limit = 30;
+    }
+
+    const skip = (page - 1) * limit;
+
+   
 
     const usersWhoBlockedMe = await User.find({
       blockedUsers: req.user.id,
@@ -82,6 +297,14 @@ router.get(
       ...blockedByIds,
     ];
 
+    const totalPosts = await Post.countDocuments({
+      residence: currentUser.residence,
+      user: {
+        $nin: excludedUsers,
+      },
+    });
+
+  
     const posts = await Post.find({
       residence: currentUser.residence,
       user: {
@@ -90,9 +313,24 @@ router.get(
     })
       .populate("user", "username profilePicture")
       .populate("residence", "name wilaya")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
+    
+    const totalPages = Math.ceil(totalPosts / limit);
+
+    const hasNextPage = page < totalPages;
+    const hasPreviousPage = page > 1;
+
+  
     res.status(200).json({
+      page,
+      limit,
+      totalPosts,
+      totalPages,
+      hasNextPage,
+      hasPreviousPage,
       count: posts.length,
       posts,
     });
@@ -100,342 +338,562 @@ router.get(
 );
 
 
+
 // GET ONE POST(not gonna use it ik ikk )
-router.get("/:id", verifyToken, asyncHandler(async (req, res) => {
+// GET ONE POST
+router.get(
+  "/:id",
+  verifyToken,
+  asyncHandler(async (req, res) => {
 
-  const user = await User.findById(req.user.id);
+    const user = await User.findById(req.user.id);
 
-  if (!user) {
-    return res.status(404).json({
-      message: "User not found"
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const blockedUserIds = [
+      ...user.blockedUsers,
+      ...(await getBlockedUserIds(user._id)),
+    ];
+
+    const post = await Post.findOne({
+      _id: req.params.id,
+      residence: user.residence,
+      user: {
+        $nin: blockedUserIds,
+      },
+    })
+      .populate("user", "username profilePicture")
+      .populate("residence", "name wilaya")
+      .populate("likes", "username profilePicture");
+
+    if (!post) {
+      return res.status(404).json({
+        message: "Post not found",
+      });
+    }
+
+    res.status(200).json({
+      ...post.toObject(),
+
+      likesCount: post.likes.length,
+
+      commentsCount: post.comments
+        ? post.comments.length
+        : 0,
+
+      likedByMe: post.likes.some(
+        (like) =>
+          like._id.toString() ===
+          user._id.toString()
+      ),
     });
-  }
-
-  const post = await Post.findOne({
-    _id: req.params.id,
-    residence: user.residence
   })
-    .populate("user", "username profilePicture")
-    .populate("residence", "name wilaya")
-    .populate("likes", "username profilePicture");
-
-  if (!post) {
-    return res.status(404).json({
-      message: "Post not found"
-    });
-  }
-
-  res.status(200).json({
-    ...post.toObject(),
-
-    likesCount: post.likes.length,
-
-    commentsCount: post.comments
-      ? post.comments.length
-      : 0,
-
-    likedByMe: post.likes.some(
-      like => like._id.toString() === user._id.toString()
-    )
-  });
-
-}));
-
+);
 
 
 // UPDATE MY POST
-router.put("/:id", verifyToken, asyncHandler(async (req, res) => {
+router.put(
+  "/:id",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const { category, caption, picture } = req.body;
 
-  const { category, caption, picture } = req.body;
+    const user = await User.findById(req.user.id);
 
-  const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
 
-  if (!user) {
-    return res.status(404).json({
-      message: "User not found"
+    // Make sure the post belongs to the current user
+    // and is from the same residence
+    const post = await Post.findOne({
+      _id: req.params.id,
+      user: user._id,
+      residence: user.residence,
     });
-  }
 
-  const post = await Post.findOne({
-    _id: req.params.id,
-    user: user._id,
-    residence: user.residence
-  });
+    if (!post) {
+      return res.status(404).json({
+        message: "Post not found or you are not allowed to edit it",
+      });
+    }
 
-  if (!post) {
-    return res.status(404).json({
-      message: "Post not found or you are not allowed to edit it"
+    // Validate only the fields that were actually sent
+    const validationError = validatePostInput({
+      category: category !== undefined ? category : post.category,
+      caption: caption !== undefined ? caption : post.caption,
+      picture: picture !== undefined ? picture : post.picture,
     });
-  }
 
-  if (category !== undefined) {
-    post.category = category;
-  }
+    if (validationError) {
+      return res.status(400).json({
+        message: validationError,
+      });
+    }
 
-  if (caption !== undefined) {
-    post.caption = caption;
-  }
+    // Update only provided fields
+    if (category !== undefined) {
+      post.category = category.trim();
+    }
 
-  if (picture !== undefined) {
-    post.picture = picture;
-  }
+    if (caption !== undefined) {
+      post.caption = caption.trim();
+    }
 
-  const updatedPost = await post.save();
+    if (picture !== undefined) {
+      post.picture = picture.trim();
+    }
 
-  res.status(200).json({
-    message: "Post updated successfully",
-    post: updatedPost
-  });
+    const updatedPost = await post.save();
 
-}));
+    return res.status(200).json({
+      message: "Post updated successfully",
+      post: updatedPost,
+    });
+  })
+);
+
 
 
 // DELETE MY POST
-router.delete("/:id", verifyToken, asyncHandler(async (req, res) => {
+router.delete(
+  "/:id",
+  verifyToken,
+  asyncHandler(async (req, res) => {
 
-  const user = await User.findById(req.user.id);
+    const session = await mongoose.startSession();
 
-  if (!user) {
-    return res.status(404).json({
-      message: "User not found"
-    });
-  }
+    try {
+      session.startTransaction();
 
-  const post = await Post.findOne({
-    _id: req.params.id,
-    user: user._id,
-    residence: user.residence
-  });
+      const user = await User.findById(
+        req.user.id
+      ).session(session);
 
-  if (!post) {
-    return res.status(404).json({
-      message: "Post not found or you are not allowed to delete it"
-    });
-  }
+      if (!user) {
+        await session.abortTransaction();
 
-  // Delete all comments belonging to this post
-  await Comment.deleteMany({
-    post: post._id
-  });
+        return res.status(404).json({
+          message: "User not found",
+        });
+      }
 
-  await Post.findByIdAndDelete(post._id);
+      const post = await Post.findOne({
+        _id: req.params.id,
+        user: user._id,
+        residence: user.residence,
+      }).session(session);
 
-  res.status(200).json({
-    message: "Post deleted successfully"
-  });
+      if (!post) {
+        await session.abortTransaction();
 
-}));
+        return res.status(404).json({
+          message:
+            "Post not found or you are not allowed to delete it",
+        });
+      }
 
+      // Delete comments belonging to this post
+      await Comment.deleteMany({
+        post: post._id,
+      }).session(session);
+
+      // Delete the post
+      await Post.findByIdAndDelete(
+        post._id
+      ).session(session);
+
+      // Remove post ID from user's posts array
+      user.posts = user.posts.filter(
+        (postId) =>
+          postId.toString() !==
+          post._id.toString()
+      );
+
+      await user.save({
+        session,
+      });
+
+      await session.commitTransaction();
+
+      return res.status(200).json({
+        message: "Post deleted successfully",
+      });
+
+    } catch (error) {
+
+      await session.abortTransaction();
+      throw error;
+
+    } finally {
+      session.endSession();
+    }
+  })
+);
 
 
 // GET MY POSTS
-router.get("/user/me", verifyToken, asyncHandler(async (req, res) => {
 
-  const user = await User.findById(req.user.id);
+router.get(
+  "/user/me",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user.id);
 
-  if (!user) {
-    return res.status(404).json({
-      message: "User not found"
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const { page, limit, skip } = getPagination(req);
+
+    const filter = {
+      user: user._id,
+    };
+
+    const totalPosts = await Post.countDocuments(filter);
+
+    const posts = await Post.find(filter)
+      .populate("user", "username profilePicture")
+      .populate("residence", "name wilaya")
+      .populate("likes", "username profilePicture")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalPages = Math.ceil(totalPosts / limit);
+
+    const postsWithInfo = posts.map((post) => ({
+      ...post.toObject(),
+
+      likesCount: post.likes.length,
+
+      commentsCount: post.comments
+        ? post.comments.length
+        : 0,
+
+      likedByMe: post.likes.some(
+        (like) =>
+          like._id.toString() === user._id.toString()
+      ),
+    }));
+
+    res.status(200).json({
+      page,
+      limit,
+      totalPosts,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+      count: postsWithInfo.length,
+      posts: postsWithInfo,
     });
-  }
-
-  const posts = await Post.find({
-    user: user._id
   })
-    .populate("user", "username profilePicture")
-    .populate("residence", "name wilaya")
-    .populate("likes", "username profilePicture")
-    .sort({ createdAt: -1 });
-
-  const postsWithInfo = posts.map(post => ({
-    ...post.toObject(),
-
-    likesCount: post.likes.length,
-
-    commentsCount: post.comments
-      ? post.comments.length
-      : 0,
-
-    likedByMe: post.likes.some(
-      like => like._id.toString() === user._id.toString()
-    )
-  }));
-
-  res.status(200).json({
-    count: postsWithInfo.length,
-    posts: postsWithInfo
-  });
-
-}));
+);
 
 
 
-// GET POSTS OF ANOTHER USER
-router.get("/user/:userId", verifyToken, asyncHandler(async (req, res) => {
 
-  const currentUser = await User.findById(req.user.id);
+/// GET POSTS OF ANOTHER USER
+router.get(
+  "/user/:userId",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const currentUser = await User.findById(req.user.id);
 
-  if (!currentUser) {
-    return res.status(404).json({
-      message: "Current user not found"
+    if (!currentUser) {
+      return res.status(404).json({
+        message: "Current user not found",
+      });
+    }
+
+    const targetUser = await User.findById(req.params.userId);
+
+    if (!targetUser) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    // Make sure both users are from the same residence
+    if (
+      !targetUser.residence ||
+      targetUser.residence.toString() !==
+        currentUser.residence.toString()
+    ) {
+      return res.status(403).json({
+        message:
+          "You can only view users from your residence",
+      });
+    }
+
+    // Check blocking in both directions
+    const blockedUserIds = [
+      ...currentUser.blockedUsers,
+      ...(await getBlockedUserIds(currentUser._id)),
+    ];
+
+    const isBlocked = blockedUserIds.some(
+      (id) =>
+        id.toString() === targetUser._id.toString()
+    );
+
+    if (isBlocked) {
+      return res.status(403).json({
+        message: "You cannot view this user's posts",
+      });
+    }
+
+    const { page, limit, skip } = getPagination(req);
+
+    const filter = {
+      user: targetUser._id,
+      residence: currentUser.residence,
+    };
+
+    const totalPosts = await Post.countDocuments(filter);
+
+    const posts = await Post.find(filter)
+      .populate("user", "username profilePicture")
+      .populate("likes", "username profilePicture")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalPages = Math.ceil(totalPosts / limit);
+
+    const postsWithInfo = posts.map((post) => ({
+      ...post.toObject(),
+
+      likesCount: post.likes.length,
+
+      commentsCount: post.comments
+        ? post.comments.length
+        : 0,
+
+      likedByMe: post.likes.some(
+        (like) =>
+          like._id.toString() ===
+          currentUser._id.toString()
+      ),
+    }));
+
+    res.status(200).json({
+      page,
+      limit,
+      totalPosts,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+      count: postsWithInfo.length,
+      posts: postsWithInfo,
     });
-  }
-
-  const targetUser = await User.findById(req.params.userId);
-
-  if (!targetUser) {
-    return res.status(404).json({
-      message: "User not found"
-    });
-  }
-
-  if (
-    !targetUser.residence ||
-    targetUser.residence.toString() !== currentUser.residence.toString()
-  ) {
-    return res.status(403).json({
-      message: "You can only view users from your residence"
-    });
-  }
-
-  const posts = await Post.find({
-    user: targetUser._id,
-    residence: currentUser.residence
   })
-    .populate("user", "username profilePicture")
-    .populate("likes", "username profilePicture")
-    .sort({ createdAt: -1 });
-
-  const postsWithInfo = posts.map(post => ({
-    ...post.toObject(),
-
-    likesCount: post.likes.length,
-
-    commentsCount: post.comments
-      ? post.comments.length
-      : 0,
-
-    likedByMe: post.likes.some(
-      like => like._id.toString() === currentUser._id.toString()
-    )
-  }));
-
-  res.status(200).json({
-    count: postsWithInfo.length,
-    posts: postsWithInfo
-  });
-
-}));
-
+);
 
 
 // GET POSTS BY CATEGORY
-// GET /api/posts/category/:category
-router.get("/category/:category", verifyToken, asyncHandler(async (req, res) => {
 
-  const user = await User.findById(req.user.id);
+router.get(
+  "/category/:category",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user.id);
 
-  if (!user) {
-    return res.status(404).json({
-      message: "User not found"
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const category = req.params.category.trim();
+
+    if (!category) {
+      return res.status(400).json({
+        message: "Category is required",
+      });
+    }
+
+    const blockedUserIds = [
+      ...user.blockedUsers,
+      ...(await getBlockedUserIds(user._id)),
+    ];
+
+    const { page, limit, skip } = getPagination(req);
+
+    const filter = {
+      residence: user.residence,
+
+      category: category,
+
+      user: {
+        $nin: blockedUserIds,
+      },
+    };
+
+    const totalPosts = await Post.countDocuments(filter);
+
+    const posts = await Post.find(filter)
+      .populate("user", "username profilePicture")
+      .populate("likes", "username profilePicture")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalPages = Math.ceil(totalPosts / limit);
+
+    const postsWithInfo = posts.map((post) => ({
+      ...post.toObject(),
+
+      likesCount: post.likes.length,
+
+      commentsCount: post.comments
+        ? post.comments.length
+        : 0,
+
+      likedByMe: post.likes.some(
+        (like) =>
+          like._id.toString() === user._id.toString()
+      ),
+    }));
+
+    res.status(200).json({
+      category,
+
+      page,
+      limit,
+
+      totalPosts,
+      totalPages,
+
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+
+      count: postsWithInfo.length,
+
+      posts: postsWithInfo,
     });
-  }
-
-  const posts = await Post.find({
-    residence: user.residence,
-    category: req.params.category
   })
-    .populate("user", "username profilePicture")
-    .populate("likes", "username profilePicture")
-    .sort({ createdAt: -1 });
-
-  const postsWithInfo = posts.map(post => ({
-    ...post.toObject(),
-
-    likesCount: post.likes.length,
-
-    commentsCount: post.comments
-      ? post.comments.length
-      : 0,
-
-    likedByMe: post.likes.some(
-      like => like._id.toString() === user._id.toString()
-    )
-  }));
-
-  res.status(200).json({
-    category: req.params.category,
-    count: postsWithInfo.length,
-    posts: postsWithInfo
-  });
-
-}));
+);
 
 
 // SEARCH POSTS
-// GET /api/posts/search?q=...
-router.get("/search", verifyToken, asyncHandler(async (req, res) => {
+router.get(
+  "/search",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const { q } = req.query;
 
-  const { q } = req.query;
+    if (
+      typeof q !== "string" ||
+      !q.trim()
+    ) {
+      return res.status(400).json({
+        message: "Search query is required",
+      });
+    }
 
-  if (!q) {
-    return res.status(400).json({
-      message: "Search query is required"
-    });
-  }
+    const searchQuery = q.trim();
 
-  const user = await User.findById(req.user.id);
+    if (searchQuery.length > 100) {
+      return res.status(400).json({
+        message:
+          "Search query must not exceed 100 characters",
+      });
+    }
 
-  if (!user) {
-    return res.status(404).json({
-      message: "User not found"
-    });
-  }
+    const user = await User.findById(req.user.id);
 
-  const posts = await Post.find({
-    residence: user.residence,
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
 
-    $or: [
-      {
-        caption: {
-          $regex: q,
-          $options: "i"
-        }
+    const blockedUserIds = [
+      ...user.blockedUsers,
+      ...(await getBlockedUserIds(user._id)),
+    ];
+
+    // Escape regex characters
+    const safeSearch = escapeRegex(searchQuery);
+
+    const { page, limit, skip } = getPagination(req);
+
+    const filter = {
+      residence: user.residence,
+
+      user: {
+        $nin: blockedUserIds,
       },
-      {
-        category: {
-          $regex: q,
-          $options: "i"
-        }
-      }
-    ]
+
+      $or: [
+        {
+          caption: {
+            $regex: safeSearch,
+            $options: "i",
+          },
+        },
+        {
+          category: {
+            $regex: safeSearch,
+            $options: "i",
+          },
+        },
+      ],
+    };
+
+    const totalPosts = await Post.countDocuments(filter);
+
+    const posts = await Post.find(filter)
+      .populate("user", "username profilePicture")
+      .populate("likes", "username profilePicture")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalPages = Math.ceil(totalPosts / limit);
+
+    const postsWithInfo = posts.map((post) => ({
+      ...post.toObject(),
+
+      likesCount: post.likes.length,
+
+      commentsCount: post.comments
+        ? post.comments.length
+        : 0,
+
+      likedByMe: post.likes.some(
+        (like) =>
+          like._id.toString() === user._id.toString()
+      ),
+    }));
+
+    res.status(200).json({
+      query: searchQuery,
+
+      page,
+      limit,
+
+      totalPosts,
+      totalPages,
+
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+
+      count: postsWithInfo.length,
+
+      posts: postsWithInfo,
+    });
   })
-    .populate("user", "username profilePicture")
-    .populate("likes", "username profilePicture")
-    .sort({ createdAt: -1 });
-
-  const postsWithInfo = posts.map(post => ({
-    ...post.toObject(),
-
-    likesCount: post.likes.length,
-
-    commentsCount: post.comments
-      ? post.comments.length
-      : 0,
-
-    likedByMe: post.likes.some(
-      like => like._id.toString() === user._id.toString()
-    )
-  }));
-
-  res.status(200).json({
-    query: q,
-    count: postsWithInfo.length,
-    posts: postsWithInfo
-  });
-
-}));
-
+);
 
 
 // LIKE POST
@@ -484,7 +942,11 @@ if (blocked.blocked) {
   post.likes.push(user._id);
 
   await post.save();
-
+await notifyLike({
+  recipient: post.user,
+  sender: req.user.id,
+  post: post._id,
+});
   res.status(200).json({
     message: "Post liked successfully",
     likesCount: post.likes.length,
@@ -625,7 +1087,12 @@ if (blocked.blocked) {
 
   const populatedComment = await Comment.findById(savedComment._id)
     .populate("user", "username profilePicture");
-
+await notifyComment({
+  recipient: post.user,
+  sender: req.user.id,
+  post: post._id,
+  comment: comment._id,
+});
   res.status(201).json({
     message: "Comment added successfully",
     comment: populatedComment,

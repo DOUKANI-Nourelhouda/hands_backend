@@ -37,9 +37,11 @@ const purchaseSchema = new mongoose.Schema(
     },
 
     chargilyPaymentId: {
-      type: String,
-      default: null,
-    },
+  type: String,
+  default: null,
+  unique: true,
+  sparse: true,
+},
 
     transactionId: {
       type: String,
