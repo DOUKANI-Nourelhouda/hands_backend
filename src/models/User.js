@@ -22,9 +22,16 @@ const userSchema = new mongoose.Schema(
 
     password: {
       type: String,
-      required: true,
+      required:  function () {
+    return !this.googleId;
     },
-
+  },
+  
+googleId: {
+  type: String,
+  unique: true,
+  sparse: true,
+},
     profilePicture: {
       type: String,
       default: "",
@@ -79,6 +86,12 @@ const userSchema = new mongoose.Schema(
   type: Number,
   default: 0,
   },
+
+  deviceId: {
+  type: String,
+  unique: true,
+  sparse: true,
+},
 },
   
   {
@@ -104,6 +117,7 @@ function validateUser(user) {
 
     residence: Joi.string()
       .required(),
+    deviceId: Joi.string().trim().required(),
   });
 
   return schema.validate(user);

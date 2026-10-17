@@ -14,22 +14,21 @@ const postSchema = new mongoose.Schema(
     "Printing & Copying",
     "Sewing",
     "Phone & PC Repair",
-    "Tutoring",
-    "Graphic Design",
+    "Education",
+    "Design",
     "Photography",
     "Video Editing",
     "Hairdressing",
-    "Makeup",
     "Cleaning",
     "Laundry",
-    "Transportation",
     "Handmade",
     "Electronics",
     "Clothing",
-    "Accessories",
+    "Jewelry",
     "Translation",
-    "Writing",
+    "Projects",
     "Programming",
+    "Trips",
     "Other",
   ],
   trim: true,
@@ -43,10 +42,24 @@ const postSchema = new mongoose.Schema(
       maxlength: 300
     },
 
-    picture: {
+   
+media: [
+  {
+    url: {
       type: String,
-      default: "",
+  
     },
+    type: {
+      type: String,
+      enum: ["image", "video"],
+    
+    },
+    publicId: {
+      type: String,
+    },
+  },
+],
+
     likes: [
   {
     type: mongoose.Schema.Types.ObjectId,

@@ -43,6 +43,7 @@ const conversationRoutes = require("./routes/conversations.js");
 const messageRoutes = require("./routes/messages.js");
 const paymentRoutes = require("./routes/payment.js");
 const notificationRoutes = require("./routes/notifications.js");
+const reportRoutes = require("./routes/report.js");
 
 
 app.use("/api/conversations", conversationRoutes);
@@ -52,6 +53,7 @@ app.use('/api/residences', residenceRouter);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/auth', authRouter);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/report', reportRoutes);
 
 
 app.use((err, req, res, next) => {

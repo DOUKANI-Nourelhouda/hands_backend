@@ -8,7 +8,71 @@ const { verifyToken } = require("../middlewares/verifyToken.js");
 const { checkBlocked } = require("../middlewares/checkBlocked");
 const { notifyComment,notifyLike } = require("../services/notification_service.js");
 const mongoose = require("mongoose");
+const multer = require("multer");
+const { v2: cloudinary } = require("cloudinary");
 
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+const storage = multer.memoryStorage();
+
+const allowedMimeTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
+]);
+
+const upload = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    if (allowedMimeTypes.has(file.mimetype)) {
+      return cb(null, true);
+    }
+
+    console.log("[UPLOAD] Rejected file:", {
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+    });
+
+    cb(
+      new Error(
+        "Only JPG, PNG, WebP, MP4, MOV, and WebM files are allowed."
+      )
+    );
+  },
+  limits: {
+    files: 5,
+    fileSize: 50 * 1024 * 1024, // 50 MB per file
+  },
+});
+
+
+const uploadToCloudinary = (buffer, resourceType) => {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: "hands/posts",
+        resource_type: resourceType,
+      },
+      (error, result) => {
+        if (error) {
+          return reject(error);
+        }
+
+        resolve(result);
+      }
+    );
+
+    stream.end(buffer);
+  });
+};
 
 
 // Escape regex special characters
@@ -100,11 +164,122 @@ const getPagination = (req) => {
   };
 };
 
+// upload media
 
+router.post(
+  "/upload-media",
+  verifyToken,
+  (req, res, next) => {
+    console.log("\n========== MEDIA UPLOAD ==========");
+    console.log("[UPLOAD] Authenticated user:", req.user?.id);
 
+    upload.array("media", 5)(req, res, (err) => {
+      if (err) {
+        console.error("[UPLOAD] Multer error:", err.message);
+        console.error("[UPLOAD] Error code:", err.code);
+
+        return res.status(400).json({
+          message: err.message,
+          code: err.code || "UPLOAD_ERROR",
+        });
+      }
+
+      next();
+    });
+  },
+  asyncHandler(async (req, res) => {
+    const files = req.files || [];
+
+    console.log("[UPLOAD] Files received:", files.length);
+
+    for (const file of files) {
+      console.log("[UPLOAD] File details:", {
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size,
+      });
+    }
+
+    if (files.length === 0) {
+      console.error("[UPLOAD] No files received.");
+
+      return res.status(400).json({
+        message: "Please select at least one photo or video.",
+      });
+    }
+
+    const uploadedMedia = [];
+
+    try {
+      for (const file of files) {
+        const isVideo = file.mimetype.startsWith("video/");
+        const resourceType = isVideo ? "video" : "image";
+
+        console.log("[CLOUDINARY] Upload starting:", {
+          name: file.originalname,
+          mimetype: file.mimetype,
+          resourceType,
+        });
+
+       const result = await uploadToCloudinary(
+  file.buffer,
+  resourceType
+);
+
+        console.log("[CLOUDINARY] Upload succeeded:", {
+          publicId: result.public_id,
+          resourceType: result.resource_type,
+          format: result.format,
+        });
+
+        uploadedMedia.push({
+          url: result.secure_url,
+          type: resourceType,
+          publicId: result.public_id,
+        });
+      }
+
+      console.log("[UPLOAD] Total uploaded:", uploadedMedia.length);
+      console.log("==================================\n");
+
+      return res.status(201).json({
+        message: "Media uploaded successfully.",
+        media: uploadedMedia,
+      });
+    } catch (error) {
+  console.error("[CLOUDINARY ERROR]", error.message);
+  console.error("[CLOUDINARY ERROR DETAILS]", error);
+
+  await Promise.allSettled(
+    uploadedMedia.map((item) =>
+      cloudinary.uploader.destroy(item.publicId, {
+        resource_type: item.type,
+      })
+    )
+  );
+
+  throw error;
+}
+  })
+);
 // CREATE POST
 router.post( "/", verifyToken, asyncHandler(async (req, res) => {
-    const { category, caption, picture } = req.body;
+   const { category, caption, media = [] } = req.body;
+
+if (
+  !Array.isArray(media) ||
+  media.length > 5 ||
+  media.some(
+    (item) =>
+      !item ||
+      typeof item.url !== "string" ||
+      !["image", "video"].includes(item.type)
+  )
+) {
+  return res.status(400).json({
+    message: "Invalid media list.",
+  });
+}
 
     
 
@@ -113,10 +288,18 @@ router.post( "/", verifyToken, asyncHandler(async (req, res) => {
         message: "Category and caption are required",
       });
     }
-
+console.log("\n========== CREATE POST ==========");
+console.log("[POST] User ID:", req.user?.id);
+console.log("[POST] Request body keys:", Object.keys(req.body));
+console.log("[POST] Category:", req.body.category);
+console.log("[POST] Caption length:", req.body.caption?.length);
+console.log("[POST] Media received:", req.body.media);
 
     const user = await User.findById(req.user.id);
-
+console.log("[POST] User found:", Boolean(user));
+console.log("[POST] Residence:", user?.residence);
+console.log("[POST] Free posts used:", user?.freePostsUsed);
+console.log("[POST] Paid post credits:", user?.paidPostCredits);
     if (!user) {
       return res.status(404).json({
         message: "User not found",
@@ -202,7 +385,8 @@ router.post( "/", verifyToken, asyncHandler(async (req, res) => {
       const post = new Post({
         category,
         caption,
-        picture: picture || "",
+       media,
+picture: media.find((item) => item.type === "image")?.url || "",
         user: user._id,
         residence: user.residence,
         likes: [],
@@ -210,7 +394,11 @@ router.post( "/", verifyToken, asyncHandler(async (req, res) => {
       });
 
       const savedPost = await post.save({ session });
-
+console.log("[POST] Saved post ID:", savedPost._id);
+console.log("[POST] Saved media:", savedPost.media);
+console.log("[POST] Post type:", postType);
+console.log("[POST] SUCCESS");
+console.log("================================\n");
      
       updatedUser.posts.push(savedPost._id);
 
@@ -993,53 +1181,77 @@ router.delete("/:id/like", verifyToken, asyncHandler(async (req, res) => {
 
 }));
 
-// GET COMMENTS
+
+// GET COMMENTS WITH REPLIES
 // GET /api/posts/:id/comments
-router.get("/:id/comments", verifyToken, asyncHandler(async (req, res) => {
+router.get(
+  "/:id/comments",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user.id);
 
-  const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
 
-  if (!user) {
-    return res.status(404).json({
-      message: "User not found"
+    const post = await Post.findOne({
+      _id: req.params.id,
+      residence: user.residence,
     });
-  }
 
-  const post = await Post.findOne({
-    _id: req.params.id,
-    residence: user.residence
-  });
+    if (!post) {
+      return res.status(404).json({
+        message: "Post not found",
+      });
+    }
 
-  if (!post) {
-    return res.status(404).json({
-      message: "Post not found"
+    // Get all comments and replies for this post
+    const allComments = await Comment.find({
+      post: post._id,
+      residence: user.residence,
+    })
+      .populate("user", "username profilePicture")
+      .sort({ createdAt: 1 })
+      .lean();
+
+    // Keep only top-level comments and attach their replies
+    const comments = allComments
+      .filter((comment) => !comment.parentComment)
+      .map((comment) => ({
+        ...comment,
+        replies: allComments.filter(
+          (reply) =>
+            reply.parentComment &&
+            reply.parentComment.toString() ===
+              comment._id.toString()
+        ),
+      }));
+
+    return res.status(200).json({
+      count: allComments.length,
+      comments,
     });
-  }
-
-  const comments = await Comment.find({
-    post: post._id,
-    residence: user.residence
   })
-    .populate("user", "username profilePicture")
-    .sort({ createdAt: -1 });
-
-  res.status(200).json({
-    count: comments.length,
-    comments
-  });
-
-}));
-
+);
 
 // ADD COMMENT
 // POST /api/posts/:id/comments
 router.post("/:id/comments", verifyToken, asyncHandler(async (req, res) => {
-
   const { text } = req.body;
 
-  if (!text || !text.trim()) {
+  if (typeof text !== "string" || !text.trim()) {
     return res.status(400).json({
-      message: "Comment text is required"
+      message: "Comment text is required",
+    });
+  }
+
+  const content = text.trim();
+
+  if (content.length > 500) {
+    return res.status(400).json({
+      message: "Comment cannot exceed 500 characters",
     });
   }
 
@@ -1047,59 +1259,177 @@ router.post("/:id/comments", verifyToken, asyncHandler(async (req, res) => {
 
   if (!user) {
     return res.status(404).json({
-      message: "User not found"
+      message: "User not found",
     });
   }
 
   const post = await Post.findOne({
     _id: req.params.id,
-    residence: user.residence
+    residence: user.residence,
   });
 
   if (!post) {
     return res.status(404).json({
-      message: "Post not found"
+      message: "Post not found",
     });
   }
-const blocked = await checkBlocked(
-  req.user.id,
-  post.user
-);
 
-if (blocked.blocked) {
-  return res.status(403).json({
-    message: "You cannot comment on this post",
-  });
-}
+  const blocked = await checkBlocked(req.user.id, post.user);
+
+  if (blocked.blocked) {
+    return res.status(403).json({
+      message: "You cannot comment on this post",
+    });
+  }
+
+  // IMPORTANT: The schema field is "content", not "text".
   const comment = new Comment({
-    text: text.trim(),
+    content,
     user: user._id,
     post: post._id,
-    residence: user.residence
+    residence: user.residence,
   });
 
   const savedComment = await comment.save();
 
-  // Add comment ID to Post
   post.comments.push(savedComment._id);
-
   await post.save();
 
   const populatedComment = await Comment.findById(savedComment._id)
     .populate("user", "username profilePicture");
-await notifyComment({
-  recipient: post.user,
-  sender: req.user.id,
-  post: post._id,
-  comment: comment._id,
-});
-  res.status(201).json({
-    message: "Comment added successfully",
-    comment: populatedComment,
-    commentsCount: post.comments.length
+
+  await notifyComment({
+    recipient: post.user,
+    sender: req.user.id,
+    post: post._id,
+    comment: savedComment._id,
   });
 
-}));
+  return res.status(201).json({
+    message: "Comment added successfully",
+    comment: populatedComment,
+    commentsCount: post.comments.length,
+  });
+})); 
+
+// PUT /api/posts/:id/comments/:commentId
+router.put(
+  "/:id/comments/:commentId",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const { text } = req.body;
+
+    if (typeof text !== "string" || !text.trim()) {
+      return res.status(400).json({
+        message: "Comment text is required",
+      });
+    }
+
+    if (text.trim().length > 500) {
+      return res.status(400).json({
+        message: "Comment cannot exceed 500 characters",
+      });
+    }
+
+    const comment = await Comment.findOne({
+      _id: req.params.commentId,
+      post: req.params.id,
+      user: req.user.id,
+    });
+
+    if (!comment) {
+      return res.status(404).json({
+        message: "Comment not found or you cannot edit it",
+      });
+    }
+
+    comment.content = text.trim();
+    await comment.save();
+
+    const updatedComment = await Comment.findById(comment._id)
+      .populate("user", "username profilePicture");
+
+    return res.json({
+      message: "Comment updated successfully",
+      comment: updatedComment,
+    });
+  })
+);
+
+// POST /api/posts/:id/comments/:commentId/replies
+router.post(
+  "/:id/comments/:commentId/replies",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const { text } = req.body;
+
+    if (typeof text !== "string" || !text.trim()) {
+      return res.status(400).json({
+        message: "Reply text is required",
+      });
+    }
+
+    if (text.trim().length > 500) {
+      return res.status(400).json({
+        message: "Reply cannot exceed 500 characters",
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const post = await Post.findOne({
+      _id: req.params.id,
+      residence: user.residence,
+    });
+
+    if (!post) {
+      return res.status(404).json({
+        message: "Post not found",
+      });
+    }
+
+    const parentComment = await Comment.findOne({
+      _id: req.params.commentId,
+      post: post._id,
+    });
+
+    if (!parentComment) {
+      return res.status(404).json({
+        message: "Comment not found",
+      });
+    }
+
+    const blocked = await checkBlocked(req.user.id, post.user);
+
+    if (blocked.blocked) {
+      return res.status(403).json({
+        message: "You cannot reply to this post",
+      });
+    }
+
+    const reply = await Comment.create({
+      content: text.trim(),
+      user: user._id,
+      post: post._id,
+      residence: user.residence,
+      parentComment: parentComment._id,
+    });
+
+    const populatedReply = await Comment.findById(reply._id)
+      .populate("user", "username profilePicture");
+
+    return res.status(201).json({
+      message: "Reply added successfully",
+      reply: populatedReply,
+    });
+  })
+);
 
 
 // DELETE MY COMMENT
@@ -1159,5 +1489,157 @@ router.delete(
   })
 );
 
+// EDIT A REPLY
+
+ // EDIT A REPLY
+// PUT /api/posts/:id/comments/:commentId/replies/:replyId
+
+router.put(
+  "/:id/comments/:commentId/replies/:replyId",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const { id, commentId, replyId } = req.params;
+    const { text } = req.body;
+
+    if (typeof text !== "string" || !text.trim()) {
+      return res.status(400).json({
+        message: "Reply text is required",
+      });
+    }
+
+    if (text.trim().length > 500) {
+      return res.status(400).json({
+        message: "Reply cannot exceed 500 characters",
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const post = await Post.findOne({
+      _id: id,
+      residence: user.residence,
+    });
+
+    if (!post) {
+      return res.status(404).json({
+        message: "Post not found",
+      });
+    }
+
+    // Verify the parent comment belongs to this post.
+    const parentComment = await Comment.findOne({
+      _id: commentId,
+      post: post._id,
+      residence: user.residence,
+      parentComment: null,
+    });
+
+    if (!parentComment) {
+      return res.status(404).json({
+        message: "Parent comment not found",
+      });
+    }
+
+    // Replies are separate Comment documents.
+    const reply = await Comment.findOne({
+      _id: replyId,
+      post: post._id,
+      residence: user.residence,
+      parentComment: parentComment._id,
+      user: user._id,
+    });
+
+    if (!reply) {
+      return res.status(404).json({
+        message: "Reply not found or you cannot edit it",
+      });
+    }
+
+    reply.content = text.trim();
+    await reply.save();
+
+    const updatedReply = await Comment.findById(reply._id)
+      .populate("user", "username profilePicture")
+      .lean();
+
+    return res.status(200).json({
+      message: "Reply updated successfully",
+      reply: updatedReply,
+    });
+  })
+);
+
+
+// DELETE A REPLY
+// DELETE /api/posts/:id/comments/:commentId/replies/:replyId
+
+router.delete(
+  "/:id/comments/:commentId/replies/:replyId",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const { id, commentId, replyId } = req.params;
+
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const post = await Post.findOne({
+      _id: id,
+      residence: user.residence,
+    });
+
+    if (!post) {
+      return res.status(404).json({
+        message: "Post not found",
+      });
+    }
+
+    // Verify the parent comment belongs to this post.
+    const parentComment = await Comment.findOne({
+      _id: commentId,
+      post: post._id,
+      residence: user.residence,
+      parentComment: null,
+    });
+
+    if (!parentComment) {
+      return res.status(404).json({
+        message: "Parent comment not found",
+      });
+    }
+
+    // Only the reply's author can delete it.
+    const reply = await Comment.findOne({
+      _id: replyId,
+      post: post._id,
+      residence: user.residence,
+      parentComment: parentComment._id,
+      user: user._id,
+    });
+
+    if (!reply) {
+      return res.status(404).json({
+        message: "Reply not found or you cannot delete it",
+      });
+    }
+
+    await Comment.findByIdAndDelete(reply._id);
+
+    return res.status(200).json({
+      message: "Reply deleted successfully",
+      replyId: reply._id,
+    });
+  })
+);
 
 module.exports = router;

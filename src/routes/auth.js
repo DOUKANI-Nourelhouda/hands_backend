@@ -85,7 +85,7 @@ async function sendVerificationEmail(user) {
           style="
             display:inline-block;
             padding:12px 20px;
-            background:#E51B0D;
+            background:#fcc001;
             color:white;
             text-decoration:none;
             border-radius:6px;
@@ -151,7 +151,7 @@ async function sendResetPasswordEmail(user) {
         style="
           display:inline-block;
           padding:12px 20px;
-          background:#E51B0D;
+          background:#fcc001;
           color:white;
           text-decoration:none;
           border-radius:6px;
@@ -189,7 +189,13 @@ router.post("/register",asyncHandler(async (req, res) => {
       });
     }
 
+    const { deviceId } = req.body;
 
+    if (!deviceId || typeof deviceId !== "string") {
+       return res.status(400).json({
+       message: "Device ID is required.",
+     });
+   }
     const residenceExists =
       await Residence.findById(residence);
 
@@ -205,20 +211,59 @@ router.post("/register",asyncHandler(async (req, res) => {
     });
 
 
-    if (existingUser) {
+   
+if (existingUser) {
+  // The account exists but the email is not verified yet.
+  if (!existingUser.isVerified) {
+    await sendVerificationEmail(existingUser);
 
- 
-      if (!existingUser.isVerified) {
+    return res.status(200).json({
+      message: "Email not verified. A verification email has been sent again.",
+      verificationEmailSent: true,
+    });
+  }
 
-        return res.status(403).json({
-          message: "Email not verified",
-        });
-      }
+  // The account is already verified: check the password.
+  const isPasswordCorrect = await bcrypt.compare(
+    req.body.password,
+    existingUser.password
+  );
 
-        return res.status(409).json({
-        message: "Account already exists",
-      });
-    }
+  if (!isPasswordCorrect) {
+    return res.status(401).json({
+      message: "Incorrect password. Please try again.",
+    });
+  }
+
+  // Verified account + correct password = log in.
+  const token = jwt.sign(
+    {
+      id: existingUser._id,
+      username: existingUser.username,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "30d" }
+  );
+
+  const userResponse = existingUser.toObject();
+  delete userResponse.password;
+
+  return res.status(200).json({
+    ...userResponse,
+    token,
+    loginSuccess: true,
+    message: "Email verified successfully. Welcome to Hands!",
+  });
+}
+const existingDevice = await User.findOne({ deviceId });
+
+if (existingDevice) {
+  return res.status(409).json({
+    message:
+      "An account is already registered on this device. Please sign in instead.",
+    field: "deviceId",
+  });
+}
 
     const salt = await bcrypt.genSalt(10);
 
@@ -238,6 +283,8 @@ router.post("/register",asyncHandler(async (req, res) => {
       posts: [],
 
       isVerified: false,
+
+      deviceId: deviceId,
     });
 
 
@@ -263,15 +310,10 @@ router.post("/register",asyncHandler(async (req, res) => {
 
     delete userResponse.password;
 
-    res.status(201).json({
-
-      ...userResponse,
-
-      token,
-
-      message:
-        "Account created. Please verify your email.",
-    });
+   res.status(201).json({
+  ...userResponse,
+  message: "Account created. Please verify your email.",
+});
   })
 );
 
@@ -628,7 +670,7 @@ button {
 
   padding: 12px;
 
-  background: #0dafe5;
+  background: #fcc001;
 
   color: white;
 
@@ -677,91 +719,66 @@ Reset Password
 </div>
 
 
+
 <script>
-
 const userId = "${id}";
-
 const userToken = "${token}";
 
-
-document
-
-.getElementById("resetForm")
-
-.addEventListener("submit", async function(e) {
-
+document.getElementById("resetForm").addEventListener("submit", async function (e) {
   e.preventDefault();
 
+  console.log("Reset button clicked");
+  console.log("User ID:", userId);
+  console.log("Token exists:", !!userToken);
 
-  const password =
+  const password = document.getElementById("password").value;
 
-    document.getElementById("password").value;
+  console.log("Password entered:", password.length > 0);
+  const button = this.querySelector("button");
 
+  button.disabled = true;
+  button.textContent = "Resetting...";
 
   try {
+  const response = await fetch(
+  "/api/auth/reset-password/" + userId + "/" + userToken,
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      password: password
+    })
+  }
+);
+    const text = await response.text();
+    console.log("HTTP status:", response.status);
+    console.log("Server response:", text);
 
-
-    const response = await fetch(
-
-      "/api/auth/reset-password/" +
-
-      userId +
-
-      "/" +
-
-      userToken,
-
-      {
-
-        method: "POST",
-
-        headers: {
-
-          "Content-Type":
-            "application/json"
-
-        },
-
-        body: JSON.stringify({
-
-          password: password
-
-        })
-
-      }
-
-    );
-
-
-    const data =
-      await response.json();
-
-
-    alert(data.message);
-
-
-    if (response.ok) {
-
-      document.body.innerHTML =
-
-        "<h2>Password Reset Successful ✅</h2>";
-
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error("Server returned a non-JSON response. Check the console.");
     }
 
+    if (!response.ok) {
+      throw new Error(data.message || data.error || "Password reset failed");
+    }
+
+    document.body.innerHTML =
+      "<h2>Password Reset Successful !</h2>";
 
   } catch (error) {
-
-    console.error(error);
-
-    alert(
-      "Something went wrong"
-    );
-
+    console.error("Reset password error:", error);
+    alert(error.message);
+    button.disabled = false;
+    button.textContent = "Reset Password";
   }
-
 });
-
 </script>
+
 
 
 </body>
@@ -858,163 +875,154 @@ router.post(
 
 
 // GOOGLE LOGIN
-router.post("/google", asyncHandler(async (req, res) => {
 
-    const {
-      idToken,
-      residence,
-    } = req.body;
+router.post(
+  "/google",
+  asyncHandler(async (req, res) => {
+    const { idToken, residence, deviceId } = req.body;
 
-
+    // 1. Validate request
     if (!idToken) {
-
       return res.status(400).json({
-        message:
-          "Google token is required",
+        message: "Google token is required",
       });
     }
 
-    const ticket =
-      await client.verifyIdToken({
-
-        idToken,
-
-        audience:
-          process.env.GOOGLE_CLIENT_ID,
-
+    if (
+      !deviceId ||
+      typeof deviceId !== "string" ||
+      !deviceId.trim()
+    ) {
+      return res.status(400).json({
+        message: "Device ID is required.",
+        field: "deviceId",
       });
+    }
 
+    const normalizedDeviceId = deviceId.trim();
 
-    const payload =
-      ticket.getPayload();
+    // 2. Verify Google token
+    const ticket = await client.verifyIdToken({
+      idToken,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
 
+    const payload = ticket.getPayload();
+
+    if (!payload || !payload.email || !payload.sub) {
+      return res.status(400).json({
+        message: "Invalid Google account information.",
+      });
+    }
 
     const {
       email,
       name,
       picture,
       email_verified,
+      sub: googleId,
     } = payload;
 
-
     if (!email_verified) {
-
       return res.status(400).json({
-        message:
-          "Google email is not verified",
+        message: "Google email is not verified",
       });
     }
 
+    // 3. Find the account associated with this Google email
+    let user = await User.findOne({ email });
 
-    let user =
-      await User.findOne({
-        email,
+    // 4. Reject a device already assigned to ANOTHER account
+    const existingDevice = await User.findOne({
+      deviceId: normalizedDeviceId,
+    });
+
+    if (
+      existingDevice &&
+      (!user ||
+        existingDevice._id.toString() !== user._id.toString())
+    ) {
+      return res.status(409).json({
+        message:
+          "An account is already registered on this device. Please sign in with that account.",
+        field: "deviceId",
       });
+    }
 
+    // 5. Create a new Google user if the email is not registered
     if (!user) {
-
       if (!residence) {
-
         return res.status(400).json({
           message:
             "Residence is required for Google registration",
         });
       }
 
-
       const residenceExists =
-        await Residence.findById(
-          residence
-        );
-
+        await Residence.findById(residence);
 
       if (!residenceExists) {
-
         return res.status(404).json({
-          message:
-            "Residence not found",
+          message: "Residence not found",
         });
       }
 
-
       user = new User({
-
-        username:
-          name || email.split("@")[0],
-
+        username: name || email.split("@")[0],
         email,
-
-        profilePicture:
-          picture,
-
+        googleId,
+        profilePicture: picture,
         residence,
-
+        deviceId: normalizedDeviceId,
         posts: [],
-
         isVerified: true,
       });
 
-
       await user.save();
-
     } else {
-
-  
-      // If the user already has a residence,
-      // don't overwrite it.
-
+      // 6. Existing account: don't overwrite its residence
       if (!user.residence && residence) {
-
         const residenceExists =
-          await Residence.findById(
-            residence
-          );
-
+          await Residence.findById(residence);
 
         if (!residenceExists) {
-
           return res.status(404).json({
-            message:
-              "Residence not found",
+            message: "Residence not found",
           });
         }
 
-
-        user.residence =
-          residence;
-
-        await user.save();
+        user.residence = residence;
       }
+
+      // Associate the device with this account if not assigned
+      if (!user.deviceId) {
+        user.deviceId = normalizedDeviceId;
+      }
+
+      // Preserve or add the Google ID
+      if (!user.googleId) {
+        user.googleId = googleId;
+      }
+
+      await user.save();
     }
 
+    // 7. Generate JWT
+    const token = jwt.sign(
+      {
+        id: user._id,
+        username: user.username,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "30d" }
+    );
 
-    const token =
-      jwt.sign(
-
-        {
-          id: user._id,
-          username: user.username,
-        },
-
-        process.env.JWT_SECRET,
-
-        {
-          expiresIn: "30d",
-        }
-      );
-
-
- 
-    const userResponse =
-      user.toObject();
-
+    // 8. Return user without password
+    const userResponse = user.toObject();
     delete userResponse.password;
 
-
-    res.status(200).json({
-
+    return res.status(200).json({
       ...userResponse,
-
       token,
     });
   })
