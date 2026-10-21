@@ -7,7 +7,7 @@ const {verifyToken} = require("../middlewares/verifyToken");
 
 // REPORT A POST
 router.post(
-  "/:id/report",
+  "/:id",
   verifyToken,
   asyncHandler(async (req, res) => {
     const { reason, details = "" } = req.body;

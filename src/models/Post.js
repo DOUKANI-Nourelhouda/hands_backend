@@ -26,9 +26,12 @@ const postSchema = new mongoose.Schema(
     "Clothing",
     "Jewelry",
     "Translation",
-    "Projects",
+    "Projects", 
     "Programming",
     "Trips",
+    "Lost & Found",
+    "Rentals & Borrowing",
+    "Questions & Answers",
     "Other",
   ],
   trim: true,
@@ -90,5 +93,6 @@ media: [
     timestamps: true,
   }
 );
+
 
 module.exports = mongoose.model("Post", postSchema);

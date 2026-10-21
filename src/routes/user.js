@@ -6,7 +6,8 @@ const { User } = require("../models/User.js");
 const Post = require("../models/Post.js");
 const { verifyToken } = require("../middlewares/verifyToken");
 const { notifyFollow } = require("../services/notification_service.js");
-
+const mongoose = require("mongoose");
+const Residence = require("../models/Residence");
 
 const escapeRegex = (text) => {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -26,6 +27,184 @@ const getPagination = (req) => {
     skip: (page - 1) * limit,
   };
 };
+
+
+// S
+/* =========================
+   SEARCH USERS
+========================= */
+router.get(
+  "/search",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    console.log("\n========== SEARCH USERS ==========");
+    console.log("[USER SEARCH] Request received");
+    console.log("[USER SEARCH] Query parameters:", req.query);
+    console.log("[USER SEARCH] Authenticated user ID:", req.user?.id);
+
+    try {
+      const q = req.query.q;
+
+      // 1. Validate query
+      if (!q || typeof q !== "string" || q.trim() === "") {
+        console.log("[USER SEARCH] ERROR: Search query is missing or empty");
+
+        return res.status(400).json({
+          message: "Search query is required",
+        });
+      }
+
+      if (q.trim().length > 100) {
+        console.log("[USER SEARCH] ERROR: Query exceeds 100 characters");
+        console.log("[USER SEARCH] Query length:", q.trim().length);
+
+        return res.status(400).json({
+          message: "Search query must not exceed 100 characters",
+        });
+      }
+
+      const trimmedQuery = q.trim();
+
+      console.log("[USER SEARCH] Search term:", trimmedQuery);
+      console.log("[USER SEARCH] Search term length:", trimmedQuery.length);
+
+      // 2. Get current user
+      console.log("[USER SEARCH] Fetching authenticated user...");
+
+      const currentUser = await User.findById(req.user.id)
+        .select("residence blockedUsers");
+
+      if (!currentUser) {
+        console.log("[USER SEARCH] ERROR: Authenticated user not found");
+
+        return res.status(404).json({
+          message: "User not found",
+        });
+      }
+
+      console.log("[USER SEARCH] Current user found:", currentUser._id);
+      console.log("[USER SEARCH] Current residence:", currentUser.residence);
+      console.log(
+        "[USER SEARCH] Blocked users count:",
+        currentUser.blockedUsers?.length ?? 0
+      );
+
+      // 3. Pagination
+      const { page, limit, skip } = getPagination(req);
+
+      console.log("[USER SEARCH] Pagination:", {
+        page,
+        limit,
+        skip,
+      });
+
+      // 4. Prepare search regex
+      const safeSearch = escapeRegex(trimmedQuery);
+
+      console.log("[USER SEARCH] Escaped search regex:", safeSearch);
+
+      // 5. Find users who blocked the current user
+      console.log("[USER SEARCH] Finding users who blocked current user...");
+
+      const usersWhoBlockedMe = await User.find({
+        blockedUsers: currentUser._id,
+      }).select("_id");
+
+      const blockedByIds = usersWhoBlockedMe.map((user) => user._id);
+
+      console.log(
+        "[USER SEARCH] Users who blocked current user:",
+        blockedByIds.map((id) => id.toString())
+      );
+
+      // 6. Exclude blocked users
+      const excludedIds = [
+        ...(currentUser.blockedUsers || []),
+        ...blockedByIds,
+      ];
+
+      console.log(
+        "[USER SEARCH] Excluded user IDs:",
+        excludedIds.map((id) => id.toString())
+      );
+
+      // 7. Build MongoDB filter
+      const filter = {
+        username: {
+          $regex: safeSearch,
+          $options: "i",
+        },
+        residence: currentUser.residence,
+        _id: {
+          $nin: excludedIds,
+        },
+      };
+
+      console.log("[USER SEARCH] MongoDB filter:");
+      console.dir(filter, { depth: null });
+
+      // 8. Count matching users
+      console.log("[USER SEARCH] Counting matching users...");
+
+      const totalUsers = await User.countDocuments(filter);
+
+      console.log("[USER SEARCH] Total matching users:", totalUsers);
+
+      // 9. Fetch matching users
+      console.log("[USER SEARCH] Fetching matching users from MongoDB...");
+
+      const users = await User.find(filter)
+        .select("username profilePicture bio residence followers following")
+        .populate("residence", "name wilaya")
+        .sort({ username: 1 })
+        .skip(skip)
+        .limit(limit);
+
+      console.log("[USER SEARCH] Returned users count:", users.length);
+
+      console.log(
+        "[USER SEARCH] Returned users:",
+        users.map((user) => ({
+          id: user._id.toString(),
+          username: user.username,
+          residence: user.residence?.name ?? null,
+        }))
+      );
+
+      // 10. Send response
+      const totalPages = Math.ceil(totalUsers / limit);
+
+      const responseData = {
+        page,
+        limit,
+        totalUsers,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1,
+        count: users.length,
+        users,
+      };
+
+      console.log("[USER SEARCH] Response summary:", {
+        status: 200,
+        count: responseData.count,
+        totalUsers: responseData.totalUsers,
+        totalPages: responseData.totalPages,
+      });
+
+      console.log("========== SEARCH USERS SUCCESS ==========\n");
+
+      return res.status(200).json(responseData);
+    } catch (error) {
+      console.error("[USER SEARCH] DATABASE/ROUTE ERROR:", error);
+      console.error("[USER SEARCH] Error message:", error.message);
+      console.error("[USER SEARCH] Stack:", error.stack);
+
+      throw error;
+    }
+  })
+);
+
 
 // GET MY PROFILE
 router.get(
@@ -47,85 +226,6 @@ router.get(
   })
 );
 
-
-// SEARCH USERS
-router.get(
-  "/search",
-  verifyToken,
-  asyncHandler(async (req, res) => {
-    const q = req.query.q;
-
-    if (!q || q.trim() === "") {
-      return res.status(400).json({
-        message: "Search query is required",
-      });
-    }
-
-    if (q.trim().length > 100) {
-      return res.status(400).json({
-        message: "Search query must not exceed 100 characters",
-      });
-    }
-
-    const currentUser = await User.findById(req.user.id)
-      .select("residence blockedUsers");
-
-    if (!currentUser) {
-      return res.status(404).json({
-        message: "User not found",
-      });
-    }
-
-    const { page, limit, skip } = getPagination(req);
-
-    const safeSearch = escapeRegex(q.trim());
-
-    // Users who blocked me
-    const usersWhoBlockedMe = await User.find({
-      blockedUsers: currentUser._id,
-    }).select("_id");
-
-    const blockedByIds = usersWhoBlockedMe.map((user) => user._id);
-
-    const excludedIds = [
-      ...currentUser.blockedUsers,
-      ...blockedByIds,
-    ];
-
-    const filter = {
-      username: {
-        $regex: safeSearch,
-        $options: "i",
-      },
-
-      residence: currentUser.residence,
-
-      _id: {
-        $nin: excludedIds,
-      },
-    };
-
-    const totalUsers = await User.countDocuments(filter);
-
-    const users = await User.find(filter)
-      .select("username profilePicture bio residence followers following")
-      .populate("residence", "name wilaya")
-      .sort({ username: 1 })
-      .skip(skip)
-      .limit(limit);
-
-    res.status(200).json({
-      page,
-      limit,
-      totalUsers,
-      totalPages: Math.ceil(totalUsers / limit),
-      hasNextPage: page < Math.ceil(totalUsers / limit),
-      hasPreviousPage: page > 1,
-      count: users.length,
-      users,
-    });
-  })
-);
 
 
 // GET USER PROFILE
@@ -168,17 +268,14 @@ router.get( "/:userId", verifyToken, asyncHandler(async (req, res) => {
 );
 
 
+
+
 // UPDATE MY PROFILE
 router.put(
   "/me",
   verifyToken,
   asyncHandler(async (req, res) => {
-
-    const {
-      username,
-      bio,
-      profilePicture,
-    } = req.body;
+    const { username, bio, profilePicture, residence } = req.body;
 
     const user = await User.findById(req.user.id);
 
@@ -188,16 +285,65 @@ router.put(
       });
     }
 
+    // Username
     if (username !== undefined) {
-      user.username = username;
+      if (typeof username !== "string" || !username.trim()) {
+        return res.status(400).json({
+          message: "Username cannot be empty",
+        });
+      }
+
+      if (username.trim().length > 30) {
+        return res.status(400).json({
+          message: "Username cannot exceed 30 characters",
+        });
+      }
+
+      user.username = username.trim();
     }
 
+    // Bio
     if (bio !== undefined) {
-      user.bio = bio;
+      if (typeof bio !== "string" || bio.length > 300) {
+        return res.status(400).json({
+          message: "Bio must be at most 300 characters",
+        });
+      }
+
+      user.bio = bio.trim();
     }
 
+    // Profile picture URL
     if (profilePicture !== undefined) {
-      user.profilePicture = profilePicture;
+      if (typeof profilePicture !== "string") {
+        return res.status(400).json({
+          message: "Profile picture must be a URL string",
+        });
+      }
+
+      user.profilePicture = profilePicture.trim();
+    }
+
+    // Residence and Wilaya
+    if (residence !== undefined) {
+      if (!mongoose.isValidObjectId(residence)) {
+        return res.status(400).json({
+          message: "Invalid residence ID",
+        });
+      }
+
+      const selectedResidence = await Residence.findOne({
+        _id: residence,
+        active: true,
+      });
+
+      if (!selectedResidence) {
+        return res.status(400).json({
+          message: "Residence not found or inactive",
+        });
+      }
+
+      user.residence = selectedResidence._id;
     }
 
     await user.save();
@@ -206,12 +352,13 @@ router.put(
       .select("-password -blockedUsers")
       .populate("residence", "name wilaya");
 
-    res.status(200).json({
+    return res.status(200).json({
       message: "Profile updated successfully",
       user: updatedUser,
     });
   })
 );
+
 
 // FOLLOW USER
 router.post(
@@ -305,7 +452,7 @@ router.post(
         { session }
       );
 await notifyFollow({
-  recipient: userId,
+  recipient: targetUserId,
   sender: req.user.id,
 });
       await session.commitTransaction();
@@ -564,6 +711,7 @@ router.get(
 );
 
 // BLOCK USER
+// BLOCK USER
 router.post(
   "/:userId/block",
   verifyToken,
@@ -571,18 +719,21 @@ router.post(
     const currentUserId = req.user.id;
     const targetUserId = req.params.userId;
 
+    // Prevent blocking yourself
     if (currentUserId === targetUserId) {
       return res.status(400).json({
         message: "You cannot block yourself",
       });
     }
 
+    // Validate target user ID
     if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
       return res.status(400).json({
         message: "Invalid user ID",
       });
     }
 
+    // Find both users
     const currentUser = await User.findById(currentUserId);
     const targetUser = await User.findById(targetUserId);
 
@@ -592,7 +743,10 @@ router.post(
       });
     }
 
-    const alreadyBlocked = currentUser.blockedUsers.some(
+    // Check if already blocked
+    const blockedUsers = currentUser.blockedUsers ?? [];
+
+    const alreadyBlocked = blockedUsers.some(
       (id) => id.toString() === targetUserId
     );
 
@@ -602,29 +756,28 @@ router.post(
       });
     }
 
+    // Start transaction
     const session = await mongoose.startSession();
 
     try {
       session.startTransaction();
 
-      // Add target to my blocked list
+      // Add target user to blocked list and remove follow relationships
+     
       await User.findByIdAndUpdate(
         currentUserId,
         {
           $addToSet: {
-            blockedUsers: targetUserId,
+            blockedUsers: new mongoose.Types.ObjectId(targetUserId),
           },
-
-          // Remove target from my following/followers
           $pull: {
             following: targetUserId,
             followers: targetUserId,
           },
         },
-        { session }
+        { session, new: true }
       );
 
-      // Remove me from target's following/followers
       await User.findByIdAndUpdate(
         targetUserId,
         {
@@ -638,19 +791,34 @@ router.post(
 
       await session.commitTransaction();
 
-      res.status(200).json({
+      // Verify the committed data using a fresh database query.
+      const savedUser = await User.findById(currentUserId)
+        .select("username blockedUsers")
+        .lean();
+
+      console.log("[BLOCK] Current user:", savedUser?.username);
+      console.log(
+        "[BLOCK] Saved blocked IDs:",
+        savedUser?.blockedUsers?.map((id) => id.toString())
+      );
+      console.log("[BLOCK] Target ID:", targetUserId);
+
+      return res.status(200).json({
         message: "User blocked successfully",
         isBlocked: true,
       });
+
     } catch (error) {
-      await session.abortTransaction();
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
+
       throw error;
     } finally {
-      session.endSession();
+      await session.endSession();
     }
   })
 );
-
 
 // UNBLOCK USER
 router.delete(
@@ -871,6 +1039,87 @@ router.get(
       youBlockedThem,
       theyBlockedYou,
     });
+  })
+);
+
+
+
+router.delete(
+  "/me/followers/:followerId",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const currentUserId = req.user.id;
+    const { followerId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(followerId)) {
+      return res.status(400).json({
+        message: "Invalid follower ID",
+      });
+    }
+
+    if (currentUserId === followerId) {
+      return res.status(400).json({
+        message: "You cannot remove yourself as a follower",
+      });
+    }
+
+    const [currentUser, follower] = await Promise.all([
+      User.findById(currentUserId).select("followers"),
+      User.findById(followerId).select("following"),
+    ]);
+
+    if (!currentUser || !follower) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const isFollower = currentUser.followers.some(
+      (id) => id.toString() === followerId
+    );
+
+    if (!isFollower) {
+      return res.status(400).json({
+        message: "This user is not following you",
+      });
+    }
+
+    const session = await mongoose.startSession();
+
+    try {
+      session.startTransaction();
+
+      await User.findByIdAndUpdate(
+        currentUserId,
+        {
+          $pull: { followers: followerId },
+        },
+        { session }
+      );
+
+      await User.findByIdAndUpdate(
+        followerId,
+        {
+          $pull: { following: currentUserId },
+        },
+        { session }
+      );
+
+      await session.commitTransaction();
+
+      return res.status(200).json({
+        message: "Follower removed successfully",
+        removedUserId: followerId,
+      });
+    } catch (error) {
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
+
+      throw error;
+    } finally {
+      await session.endSession();
+    }
   })
 );
 

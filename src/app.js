@@ -12,7 +12,7 @@ dotenv.config({ override: true });
 console.log("MONGO_URI exists:", !!process.env.MONGO_URI);
 console.log("MONGO_URI starts with:", process.env.MONGO_URI?.substring(0, 15));
 const http = require("http");
-const { initializeSocket } = require("./socket/socket.js");
+const { initializeSocket } = require("./sockeet.js");
 const connectDB = require('./config/db.js');
 const helmet = require("helmet");
 const cors = require("cors");
@@ -44,6 +44,8 @@ const messageRoutes = require("./routes/messages.js");
 const paymentRoutes = require("./routes/payment.js");
 const notificationRoutes = require("./routes/notifications.js");
 const reportRoutes = require("./routes/report.js");
+const userRoutes = require("./routes/user.js");
+const groupRoutes = require("./routes/group.js");
 
 
 app.use("/api/conversations", conversationRoutes);
@@ -54,7 +56,8 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/auth', authRouter);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/report', reportRoutes);
-
+app.use('/api/user', userRoutes);
+app.use("/api/group", groupRoutes);
 
 app.use((err, req, res, next) => {
     const statusCode = res.statusCode === 200 ? 500 : res.statusCode;

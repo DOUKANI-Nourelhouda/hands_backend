@@ -1,6 +1,6 @@
 const Notification = require("../models/Notification.js");
 const { User } = require("../models/User.js");
-const { emitToUser } = require("../socket/socket.js");
+const { emitToUser } = require("../sockeet.js");
 
 
 

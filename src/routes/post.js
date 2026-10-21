@@ -10,7 +10,7 @@ const { notifyComment,notifyLike } = require("../services/notification_service.j
 const mongoose = require("mongoose");
 const multer = require("multer");
 const { v2: cloudinary } = require("cloudinary");
-
+const Report = require("../models/Report");
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -163,11 +163,104 @@ const getPagination = (req) => {
     skip,
   };
 };
+// search post 
 
+
+router.get(
+  "/search",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const { q } = req.query;
+
+    if (typeof q !== "string" || !q.trim()) {
+      return res.status(400).json({
+        message: "Search query is required",
+      });
+    }
+
+    const searchQuery = q.trim();
+
+    if (searchQuery.length > 100) {
+      return res.status(400).json({
+        message: "Search query must not exceed 100 characters",
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const blockedByMe = (user.blockedUsers || []).map(
+      (id) => id.toString()
+    );
+
+    const blockedMe = await getBlockedUserIds(user._id);
+
+    const blockedUserIds = [
+      ...new Set([
+        ...blockedByMe,
+        ...blockedMe.map((id) => id.toString()),
+      ]),
+    ];
+
+    const safeSearch = escapeRegex(searchQuery);
+
+    const { page, limit, skip } = getPagination(req);
+
+    const filter = {
+      residence: user.residence,
+      user: {
+        $nin: blockedUserIds,
+      },
+      caption: {
+        $regex: safeSearch,
+        $options: "i",
+      },
+    };
+
+    const totalPosts = await Post.countDocuments(filter);
+
+    const posts = await Post.find(filter)
+      .populate("user", "username profilePicture")
+      .populate("likes", "username profilePicture")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalPages = Math.ceil(totalPosts / limit);
+
+    const postsWithInfo = posts.map((post) => ({
+      ...post.toObject(),
+      likesCount: post.likes.length,
+      commentsCount: post.comments ? post.comments.length : 0,
+      likedByMe: post.likes.some(
+        (like) =>
+          like._id.toString() === user._id.toString()
+      ),
+    }));
+
+    return res.status(200).json({
+      query: searchQuery,
+      page,
+      limit,
+      totalPosts,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+      count: postsWithInfo.length,
+      posts: postsWithInfo,
+    });
+  })
+);
+ 
 // upload media
 
 router.post(
-  "/upload-media",
+  "/upload-media", 
   verifyToken,
   (req, res, next) => {
     console.log("\n========== MEDIA UPLOAD ==========");
@@ -439,7 +532,10 @@ console.log("================================\n");
 // GET POSTS FROM MY RESIDENCE
 // GET /api/posts?page=1&limit=10
 
-router.get( "/", verifyToken, asyncHandler(async (req, res) => {
+router.get(
+  "/",
+  verifyToken,
+  asyncHandler(async (req, res) => {
     const currentUser = await User.findById(req.user.id)
       .select("residence blockedUsers");
 
@@ -449,29 +545,17 @@ router.get( "/", verifyToken, asyncHandler(async (req, res) => {
       });
     }
 
-
-
+    // PAGINATION
     let page = parseInt(req.query.page) || 1;
     let limit = parseInt(req.query.limit) || 10;
 
-   
-    if (page < 1) {
-      page = 1;
-    }
-
-  
-    if (limit < 1) {
-      limit = 10;
-    }
-
-    if (limit > 30) {
-      limit = 30;
-    }
+    if (page < 1) page = 1;
+    if (limit < 1) limit = 10;
+    if (limit > 30) limit = 30;
 
     const skip = (page - 1) * limit;
 
-   
-
+    // FIND USERS WHO BLOCKED ME
     const usersWhoBlockedMe = await User.find({
       blockedUsers: req.user.id,
     }).select("_id");
@@ -480,39 +564,52 @@ router.get( "/", verifyToken, asyncHandler(async (req, res) => {
       (user) => user._id
     );
 
+    // COMBINE BLOCKED USERS
     const excludedUsers = [
       ...currentUser.blockedUsers,
       ...blockedByIds,
     ];
 
-    const totalPosts = await Post.countDocuments({
-      residence: currentUser.residence,
-      user: {
-        $nin: excludedUsers,
-      },
-    });
+    // FIND POSTS REPORTED BY THE CURRENT USER
+    const reports = await Report.find({
+      reporter: req.user.id,
+    }).select("post");
 
-  
-    const posts = await Post.find({
+    const reportedPostIds = reports.map(
+      (report) => report.post
+    );
+
+    // SHARED FILTER FOR COUNT AND POSTS
+    const postFilter = {
       residence: currentUser.residence,
       user: {
         $nin: excludedUsers,
       },
-    })
+      _id: {
+        $nin: reportedPostIds,
+      },
+    };
+
+    // COUNT MATCHING POSTS
+    const totalPosts = await Post.countDocuments(
+      postFilter
+    );
+
+    // GET PAGINATED POSTS
+    const posts = await Post.find(postFilter)
       .populate("user", "username profilePicture")
       .populate("residence", "name wilaya")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    
+    // PAGINATION METADATA
     const totalPages = Math.ceil(totalPosts / limit);
 
     const hasNextPage = page < totalPages;
     const hasPreviousPage = page > 1;
 
-  
-    res.status(200).json({
+    return res.status(200).json({
       page,
       limit,
       totalPosts,
@@ -583,12 +680,12 @@ router.get(
 );
 
 
-// UPDATE MY POST
+/* UPDATE MY POST */
 router.put(
   "/:id",
   verifyToken,
   asyncHandler(async (req, res) => {
-    const { category, caption, picture } = req.body;
+    const { category, caption, picture, media } = req.body;
 
     const user = await User.findById(req.user.id);
 
@@ -599,7 +696,7 @@ router.put(
     }
 
     // Make sure the post belongs to the current user
-    // and is from the same residence
+    // and is from the same residence.
     const post = await Post.findOne({
       _id: req.params.id,
       user: user._id,
@@ -612,7 +709,7 @@ router.put(
       });
     }
 
-    // Validate only the fields that were actually sent
+    // Validate the fields being updated.
     const validationError = validatePostInput({
       category: category !== undefined ? category : post.category,
       caption: caption !== undefined ? caption : post.caption,
@@ -625,17 +722,30 @@ router.put(
       });
     }
 
-    // Update only provided fields
+    // Update category.
     if (category !== undefined) {
       post.category = category.trim();
     }
 
+    // Update caption.
     if (caption !== undefined) {
       post.caption = caption.trim();
     }
 
+    // Keep legacy picture support.
     if (picture !== undefined) {
       post.picture = picture.trim();
+    }
+
+    // Update photos/videos when Flutter sends the media array.
+    if (media !== undefined) {
+      if (!Array.isArray(media)) {
+        return res.status(400).json({
+          message: "Media must be an array",
+        });
+      }
+
+      post.media = media;
     }
 
     const updatedPost = await post.save();
@@ -646,6 +756,7 @@ router.put(
     });
   })
 );
+
 
 
 
@@ -971,117 +1082,6 @@ router.get(
   })
 );
 
-
-// SEARCH POSTS
-router.get(
-  "/search",
-  verifyToken,
-  asyncHandler(async (req, res) => {
-    const { q } = req.query;
-
-    if (
-      typeof q !== "string" ||
-      !q.trim()
-    ) {
-      return res.status(400).json({
-        message: "Search query is required",
-      });
-    }
-
-    const searchQuery = q.trim();
-
-    if (searchQuery.length > 100) {
-      return res.status(400).json({
-        message:
-          "Search query must not exceed 100 characters",
-      });
-    }
-
-    const user = await User.findById(req.user.id);
-
-    if (!user) {
-      return res.status(404).json({
-        message: "User not found",
-      });
-    }
-
-    const blockedUserIds = [
-      ...user.blockedUsers,
-      ...(await getBlockedUserIds(user._id)),
-    ];
-
-    // Escape regex characters
-    const safeSearch = escapeRegex(searchQuery);
-
-    const { page, limit, skip } = getPagination(req);
-
-    const filter = {
-      residence: user.residence,
-
-      user: {
-        $nin: blockedUserIds,
-      },
-
-      $or: [
-        {
-          caption: {
-            $regex: safeSearch,
-            $options: "i",
-          },
-        },
-        {
-          category: {
-            $regex: safeSearch,
-            $options: "i",
-          },
-        },
-      ],
-    };
-
-    const totalPosts = await Post.countDocuments(filter);
-
-    const posts = await Post.find(filter)
-      .populate("user", "username profilePicture")
-      .populate("likes", "username profilePicture")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
-
-    const totalPages = Math.ceil(totalPosts / limit);
-
-    const postsWithInfo = posts.map((post) => ({
-      ...post.toObject(),
-
-      likesCount: post.likes.length,
-
-      commentsCount: post.comments
-        ? post.comments.length
-        : 0,
-
-      likedByMe: post.likes.some(
-        (like) =>
-          like._id.toString() === user._id.toString()
-      ),
-    }));
-
-    res.status(200).json({
-      query: searchQuery,
-
-      page,
-      limit,
-
-      totalPosts,
-      totalPages,
-
-      hasNextPage: page < totalPages,
-      hasPreviousPage: page > 1,
-
-      count: postsWithInfo.length,
-
-      posts: postsWithInfo,
-    });
-  })
-);
 
 
 // LIKE POST

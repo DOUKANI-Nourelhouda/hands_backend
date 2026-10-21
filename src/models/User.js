@@ -120,6 +120,7 @@ function validateUser(user) {
     deviceId: Joi.string().trim().required(),
   });
 
+  
   return schema.validate(user);
 }
 
