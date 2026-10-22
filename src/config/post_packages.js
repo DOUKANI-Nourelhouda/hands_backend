@@ -11,7 +11,7 @@ const POST_PACKAGES = {
 
   "20_posts": {
     posts: 20,
-    price: 175,
+    price: 170,
   },
 };
 

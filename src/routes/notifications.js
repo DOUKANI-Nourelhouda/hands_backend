@@ -232,9 +232,7 @@ router.put(
           },
         },
 
-        {
-          new: true,
-        }
+        { returnDocument: 'after' }
       );
 
 

@@ -2,7 +2,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const router = express.Router();
 const {verifyToken} = require("../middlewares/verifyToken");
-const User = require("../models/User");
+const {User }= require("../models/User");
 const Group = require("../models/Group");
 const GroupMessage = require("../models/GroupMsg");
 
@@ -151,13 +151,15 @@ router.get("/", verifyToken, async (req, res) => {
       .sort({ lastMessageAt: -1, updatedAt: -1 });
 
     return res.json({ groups });
-  } catch (error) {
-    console.error("[GROUP LIST]", error);
+ } catch (error) {
+  console.error("[GROUP LIST] Error name:", error.name);
+  console.error("[GROUP LIST] Error message:", error.message);
+  console.error("[GROUP LIST] Stack:", error.stack);
 
-    return res.status(500).json({
-      message: "Could not load groups.",
-    });
-  }
+  return res.status(500).json({
+    message: "Could not load groups.",
+  });
+}
 });
 
 // GET GROUP MESSAGE HISTORY
