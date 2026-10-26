@@ -37,17 +37,14 @@ router.get(
   "/search",
   verifyToken,
   asyncHandler(async (req, res) => {
-    console.log("\n========== SEARCH USERS ==========");
-    console.log("[USER SEARCH] Request received");
-    console.log("[USER SEARCH] Query parameters:", req.query);
-    console.log("[USER SEARCH] Authenticated user ID:", req.user?.id);
+  
 
     try {
       const q = req.query.q;
 
       // 1. Validate query
       if (!q || typeof q !== "string" || q.trim() === "") {
-        console.log("[USER SEARCH] ERROR: Search query is missing or empty");
+      
 
         return res.status(400).json({
           message: "Search query is required",
@@ -55,8 +52,7 @@ router.get(
       }
 
       if (q.trim().length > 100) {
-        console.log("[USER SEARCH] ERROR: Query exceeds 100 characters");
-        console.log("[USER SEARCH] Query length:", q.trim().length);
+      
 
         return res.status(400).json({
           message: "Search query must not exceed 100 characters",
@@ -65,29 +61,19 @@ router.get(
 
       const trimmedQuery = q.trim();
 
-      console.log("[USER SEARCH] Search term:", trimmedQuery);
-      console.log("[USER SEARCH] Search term length:", trimmedQuery.length);
-
-      // 2. Get current user
-      console.log("[USER SEARCH] Fetching authenticated user...");
 
       const currentUser = await User.findById(req.user.id)
         .select("residence blockedUsers");
 
       if (!currentUser) {
-        console.log("[USER SEARCH] ERROR: Authenticated user not found");
+      
 
         return res.status(404).json({
           message: "User not found",
         });
       }
 
-      console.log("[USER SEARCH] Current user found:", currentUser._id);
-      console.log("[USER SEARCH] Current residence:", currentUser.residence);
-      console.log(
-        "[USER SEARCH] Blocked users count:",
-        currentUser.blockedUsers?.length ?? 0
-      );
+     
 
       // 3. Pagination
       const { page, limit, skip } = getPagination(req);

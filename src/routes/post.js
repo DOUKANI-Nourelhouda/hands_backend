@@ -36,10 +36,6 @@ const upload = multer({
       return cb(null, true);
     }
 
-    console.log("[UPLOAD] Rejected file:", {
-      originalname: file.originalname,
-      mimetype: file.mimetype,
-    });
 
     cb(
       new Error(
@@ -263,9 +259,7 @@ router.post(
   "/upload-media", 
   verifyToken,
   (req, res, next) => {
-    console.log("\n========== MEDIA UPLOAD ==========");
-    console.log("[UPLOAD] Authenticated user:", req.user?.id);
-
+   
     upload.array("media", 5)(req, res, (err) => {
       if (err) {
         console.error("[UPLOAD] Multer error:", err.message);
@@ -283,15 +277,9 @@ router.post(
   asyncHandler(async (req, res) => {
     const files = req.files || [];
 
-    console.log("[UPLOAD] Files received:", files.length);
+   
 
-    for (const file of files) {
-      console.log("[UPLOAD] File details:", {
-        originalname: file.originalname,
-        mimetype: file.mimetype,
-        size: file.size,
-      });
-    }
+   
 
     if (files.length === 0) {
       console.error("[UPLOAD] No files received.");
@@ -308,22 +296,14 @@ router.post(
         const isVideo = file.mimetype.startsWith("video/");
         const resourceType = isVideo ? "video" : "image";
 
-        console.log("[CLOUDINARY] Upload starting:", {
-          name: file.originalname,
-          mimetype: file.mimetype,
-          resourceType,
-        });
+       
 
        const result = await uploadToCloudinary(
   file.buffer,
   resourceType
 );
 
-        console.log("[CLOUDINARY] Upload succeeded:", {
-          publicId: result.public_id,
-          resourceType: result.resource_type,
-          format: result.format,
-        });
+       
 
         uploadedMedia.push({
           url: result.secure_url,
@@ -332,16 +312,14 @@ router.post(
         });
       }
 
-      console.log("[UPLOAD] Total uploaded:", uploadedMedia.length);
-      console.log("==================================\n");
+    
 
       return res.status(201).json({
         message: "Media uploaded successfully.",
         media: uploadedMedia,
       });
     } catch (error) {
-  console.error("[CLOUDINARY ERROR]", error.message);
-  console.error("[CLOUDINARY ERROR DETAILS]", error);
+ 
 
   await Promise.allSettled(
     uploadedMedia.map((item) =>
@@ -381,18 +359,10 @@ if (
         message: "Category and caption are required",
       });
     }
-console.log("\n========== CREATE POST ==========");
-console.log("[POST] User ID:", req.user?.id);
-console.log("[POST] Request body keys:", Object.keys(req.body));
-console.log("[POST] Category:", req.body.category);
-console.log("[POST] Caption length:", req.body.caption?.length);
-console.log("[POST] Media received:", req.body.media);
+
 
     const user = await User.findById(req.user.id);
-console.log("[POST] User found:", Boolean(user));
-console.log("[POST] Residence:", user?.residence);
-console.log("[POST] Free posts used:", user?.freePostsUsed);
-console.log("[POST] Paid post credits:", user?.paidPostCredits);
+
     if (!user) {
       return res.status(404).json({
         message: "User not found",
@@ -487,11 +457,7 @@ picture: media.find((item) => item.type === "image")?.url || "",
       });
 
       const savedPost = await post.save({ session });
-console.log("[POST] Saved post ID:", savedPost._id);
-console.log("[POST] Saved media:", savedPost.media);
-console.log("[POST] Post type:", postType);
-console.log("[POST] SUCCESS");
-console.log("================================\n");
+
      
       updatedUser.posts.push(savedPost._id);
 

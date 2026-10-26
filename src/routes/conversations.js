@@ -8,78 +8,71 @@ const { verifyToken } = require("../middlewares/verifyToken");
 
 
 
-// CREATE / GET EXISTING CONVERSATION
-// POST /api/conversations
-router.post( "/", verifyToken, asyncHandler(async (req, res) => {
+ // CREATE / GET EXISTING CONVERSATION
+ // POST /api/conversations
 
+router.post(
+  "/",
+  verifyToken,
+  asyncHandler(async (req, res) => {
     const currentUserId = req.user.id;
-    const { userId } = req.body;
 
+    // Accept recipientId from Flutter, or userId if sent by another client.
+    const userId = req.body.recipientId || req.body.userId;
 
-    const currentUserBlockedOther =
-        currentUser.blockedUsers.some(
-       (id) => id.toString() === otherUser._id.toString()
-      );
-
-    const otherUserBlockedCurrent =
-      otherUser.blockedUsers.some(
-     (id) => id.toString() === currentUser._id.toString()
- );
-
-    if (currentUserBlockedOther || otherUserBlockedCurrent) {
-       return res.status(403).json({
-       message: "You cannot contact this user",
-     });
-}
-
-/*const blocked = await checkBlocked(
-  req.user.id,
-  targetUserId
-);
-
-if (blocked.blocked) {
-  return res.status(403).json({
-    message: "You cannot message this user",
-  });
-}*/
+    // 1. Validate the recipient ID
     if (!userId) {
       return res.status(400).json({
-        message: "userId is required",
+        message: "recipientId is required",
       });
     }
 
-    if (currentUserId === userId) {
+    if (currentUserId.toString() === userId.toString()) {
       return res.status(400).json({
         message: "You cannot create a conversation with yourself",
       });
     }
 
-    // Get current user
+    // 2. Get both users BEFORE accessing their properties
     const currentUser = await User.findById(currentUserId);
-
     if (!currentUser) {
       return res.status(404).json({
         message: "Current user not found",
       });
     }
 
-    // Get other user
     const otherUser = await User.findById(userId);
-
     if (!otherUser) {
       return res.status(404).json({
         message: "User not found",
       });
     }
 
-    
-    // SAME RESIDENCE CHECk
+    // 3. Check whether either user has blocked the other
+    const currentUserBlockedOther =
+      (currentUser.blockedUsers || []).some(
+        (id) => id.toString() === otherUser._id.toString()
+      );
+
+    const otherUserBlockedCurrent =
+      (otherUser.blockedUsers || []).some(
+        (id) => id.toString() === currentUser._id.toString()
+      );
+
+    if (currentUserBlockedOther || otherUserBlockedCurrent) {
+      return res.status(403).json({
+        message: "You cannot contact this user",
+      });
+    }
+
+    // 4. Both users must belong to a residence
     if (!currentUser.residence || !otherUser.residence) {
       return res.status(400).json({
         message: "Both users must belong to a residence",
       });
     }
 
+    // 5. Users must belong to the same residence
     if (
       currentUser.residence.toString() !==
       otherUser.residence.toString()
@@ -89,23 +82,24 @@ if (blocked.blocked) {
       });
     }
 
-    
-    // CHECK IF CONVERSATION ALREADY EXISTS
+    // 6. Check whether a conversation already exists
     let conversation = await Conversation.findOne({
       residence: currentUser.residence,
       participants: {
-        $all: [currentUserId, userId],
+        $all: [currentUser._id, otherUser._id],
+        $size: 2,
       },
-    })
-      .populate("participants", "-password");
+    }).populate("participants", "-password");
 
     if (conversation) {
-      return res.status(200).json(conversation);
+      return res.status(200).json({
+        conversation,
+      });
     }
 
-    // CREATE NEW CONVERSATION
+    // 7. Create a new conversation
     conversation = await Conversation.create({
-      participants: [currentUserId, userId],
+      participants: [currentUser._id, otherUser._id],
       residence: currentUser.residence,
     });
 
@@ -114,10 +108,11 @@ if (blocked.blocked) {
       "-password"
     );
 
-    res.status(201).json(conversation);
+    return res.status(201).json({
+      conversation,
+    });
   })
 );
-
 
 
 // GET MY CONVERSATIONS

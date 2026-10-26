@@ -132,36 +132,46 @@ router.post("/", verifyToken, async (req, res) => {
     });
   }
 });
-
 // GET MY GROUPS
 router.get("/", verifyToken, async (req, res) => {
   try {
+    // Get the current user using the ID from your auth middleware.
     const currentUser = await getCurrentUser(req.user.id);
 
     if (!currentUser) {
-      return res.status(404).json({ message: "User not found." });
+      return res.status(404).json({
+        message: "User not found.",
+      });
     }
 
+    // Use the actual ID of the user we found.
+    const userId = currentUser._id;
+
+    console.log("[GROUP LIST] Current user ID:", userId.toString());
+
     const groups = await Group.find({
-      members: currentUser._id,
-      residence: currentUser.residence,
+      members: userId,
     })
       .populate("members", "username profilePicture")
-      .populate("lastMessage")
-      .sort({ lastMessageAt: -1, updatedAt: -1 });
+      .populate("admins", "username profilePicture")
+      .populate("createdBy", "username profilePicture")
+      .sort({ updatedAt: -1 });
 
-    return res.json({ groups });
- } catch (error) {
-  console.error("[GROUP LIST] Error name:", error.name);
-  console.error("[GROUP LIST] Error message:", error.message);
-  console.error("[GROUP LIST] Stack:", error.stack);
+    console.log("[GROUP LIST] Groups found:", groups.length);
+    console.log(
+      "[GROUP LIST] Group names:",
+      groups.map((group) => group.name)
+    );
 
-  return res.status(500).json({
-    message: "Could not load groups.",
-  });
-}
+    return res.status(200).json(groups);
+  } catch (error) {
+    console.error("[GROUP LIST] Error:", error);
+
+    return res.status(500).json({
+      message: "Could not load groups.",
+    });
+  }
 });
-
 // GET GROUP MESSAGE HISTORY
 router.get("/:groupId/messages", verifyToken, async (req, res) => {
   try {
@@ -343,78 +353,82 @@ router.post("/:groupId/members", verifyToken, async (req, res) => {
   }
 });
 
-// REMOVE A MEMBER, OR LEAVE THE GROUP.
-router.delete("/:groupId/members/:memberId", verifyToken, async (req, res) => {
+router.delete('/:groupId/leave', verifyToken, async (req, res) => {
   try {
-    const { groupId, memberId } = req.params;
+    const { groupId } = req.params;
 
-    if (
-      !mongoose.Types.ObjectId.isValid(groupId) ||
-      !mongoose.Types.ObjectId.isValid(memberId)
-    ) {
-      return res.status(400).json({
-        message: "Invalid group or member ID.",
+    // Use the same user ID property as your other routes.
+    const userId = req.user?.id;
+
+    console.log('[LEAVE GROUP] Authenticated user ID:', userId);
+    console.log('[LEAVE GROUP] Group ID:', groupId);
+
+    if (!userId) {
+      return res.status(401).json({
+        message: 'User authentication failed.',
       });
     }
 
-    const currentUser = await getCurrentUser(req.user.id);
+    const group = await Group.findById(groupId);
 
-    if (!currentUser) {
-      return res.status(404).json({ message: "User not found." });
+    if (!group) {
+      return res.status(404).json({
+        message: 'Group not found.',
+      });
     }
 
-    const group = await Group.findOne({
-      _id: groupId,
-      residence: currentUser.residence,
+    // Compare MongoDB IDs as strings.
+    const userIdString = userId.toString();
+
+    const isMember = group.members.some((member) => {
+      const memberId = member?._id
+        ? member._id.toString()
+        : member?.toString();
+
+      return memberId === userIdString;
     });
 
-    if (!group || !isGroupMember(group, currentUser._id)) {
-      return res.status(404).json({ message: "Group not found." });
-    }
+    console.log('[LEAVE GROUP] Is member:', isMember);
 
-    const isLeaving = sameId(currentUser._id, memberId);
-
-    if (!isLeaving && !isGroupAdmin(group, currentUser._id)) {
-      return res.status(403).json({
-        message: "Only group admins can remove other members.",
-      });
-    }
-
-    if (!isGroupMember(group, memberId)) {
-      return res.status(404).json({
-        message: "That student is not a group member.",
-      });
-    }
-
-    if (sameId(group.createdBy, memberId)) {
+    if (!isMember) {
       return res.status(400).json({
-        message:
-          "The group creator cannot leave or be removed in this version.",
+        message: 'You are not a member of this group.',
       });
     }
 
-    await Group.updateOne(
-      { _id: group._id },
-      {
-        $pull: {
-          members: new mongoose.Types.ObjectId(memberId),
-          admins: new mongoose.Types.ObjectId(memberId),
-        },
-      }
-    );
+    // Remove the user from the members list.
+    group.members = group.members.filter((member) => {
+      const memberId = member?._id
+        ? member._id.toString()
+        : member?.toString();
 
-    return res.json({
-      message: isLeaving
-        ? "You left the group."
-        : "Member removed successfully.",
+      return memberId !== userIdString;
+    });
+
+    // Also remove the user from the admins list if applicable.
+    group.admins = group.admins.filter((admin) => {
+      const adminId = admin?._id
+        ? admin._id.toString()
+        : admin?.toString();
+
+      return adminId !== userIdString;
+    });
+
+    await group.save();
+
+    console.log('[LEAVE GROUP] Successfully left group:', groupId);
+
+    return res.status(200).json({
+      message: 'You left the group successfully.',
     });
   } catch (error) {
-    console.error("[GROUP REMOVE MEMBER]", error);
+    console.error('[LEAVE GROUP ERROR]', error);
 
     return res.status(500).json({
-      message: "Could not update group membership.",
+      message: 'Server error while leaving the group.',
     });
   }
 });
+
 
 module.exports = router;

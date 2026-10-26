@@ -1,6 +1,6 @@
 
 const mongoose = require("mongoose");
-const User = require("../models/User");
+const {User} = require("../models/User");
 const Group = require("../models/Group");
 const GroupMessage = require("../models/GroupMsg");
 
@@ -22,7 +22,10 @@ function hasBlockBetweenUsers(users) {
 
 function registerGroupChatHandlers(io, socket) {
   const userId = socket.data.userId;
-
+console.log("[GROUP SOCKET] Handlers registered:", {
+  userId,
+  socketId: socket.id,
+});
   if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
     socket.disconnect(true);
     return;
@@ -33,14 +36,14 @@ function registerGroupChatHandlers(io, socket) {
   socket.join(`user:${userId}`);
 
   // JOIN GROUP ROOM
-  socket.on("group:join", async ({ groupId } = {}) => {
-    try {
-      if (!mongoose.Types.ObjectId.isValid(groupId)) {
-        socket.emit("group:error", {
-          message: "Invalid group ID.",
-        });
-        return;
-      }
+ socket.on("group:join", async ({ groupId } = {}) => {
+  try {
+    console.log("[GROUP JOIN] Request received:", {
+      userId,
+      groupId,
+      socketId: socket.id,
+    });
+
 
       const user = await User.findById(userId).select("residence");
 
@@ -62,18 +65,26 @@ function registerGroupChatHandlers(io, socket) {
         return;
       }
 
-      await socket.join(`group:${group._id}`);
+    // Actually join the Socket.IO room.
+await socket.join(`group:${group._id}`);
 
-      socket.emit("group:joined", {
-        groupId: group._id.toString(),
-      });
-    } catch (error) {
-      console.error("[SOCKET GROUP JOIN]", error);
-      socket.emit("group:error", {
-        message: "Could not join group chat.",
-      });
-    }
-  });
+console.log(
+  "[GROUP JOIN] Successfully joined:",
+  `group:${group._id}`
+);
+
+socket.emit("group:joined", {
+  groupId: group._id.toString(),
+    });
+  } catch (error) {
+    console.error("[SOCKET GROUP JOIN]", error);
+    socket.emit("group:error", {
+      message: "Could not join group chat.",
+    });
+  }
+});
+
+     
 
   // LEAVE GROUP ROOM
   socket.on("group:leave", async ({ groupId } = {}) => {
@@ -86,6 +97,9 @@ function registerGroupChatHandlers(io, socket) {
   // SEND GROUP MESSAGE
   socket.on("group:message:send", async (payload = {}) => {
     try {
+        console.log("[GROUP SEND] Event received:", payload);
+    console.log("[GROUP SEND] User:", userId);
+    console.log("[GROUP SEND] Socket:", socket.id);
       const { groupId } = payload;
       const text =
         typeof payload.text === "string" ? payload.text.trim() : "";
@@ -141,11 +155,13 @@ function registerGroupChatHandlers(io, socket) {
         return;
       }
 
-      const message = await GroupMessage.create({
-        group: group._id,
-        sender: sender._id,
-        text,
-      });
+       const message = await GroupMessage.create({
+      group: group._id,
+      sender: sender._id,
+      text,
+    });
+
+    console.log("[GROUP SEND] Message saved:", message._id);
 
       await Group.updateOne(
         { _id: group._id },
@@ -163,17 +179,21 @@ function registerGroupChatHandlers(io, socket) {
 
       // Only sockets that have been authorized into this group room
       // receive the message.
-      io.to(`group:${group._id}`).emit(
-        "group:message:new",
-        populatedMessage
-      );
-    } catch (error) {
-      console.error("[SOCKET GROUP MESSAGE]", error);
-      socket.emit("group:error", {
-        message: "Could not send group message.",
-      });
-    }
-  });
+      console.log("[GROUP SEND] Broadcasting to:", `group:${group._id}`);
+
+    io.to(`group:${group._id}`).emit(
+      "group:message:new",
+      populatedMessage
+    );
+
+    console.log("[GROUP SEND] Broadcast completed");
+  } catch (error) {
+    console.error("[SOCKET GROUP MESSAGE]", error);
+    socket.emit("group:error", {
+      message: "Could not send group message.",
+    });
+  }
+});
 }
 
 module.exports = registerGroupChatHandlers;

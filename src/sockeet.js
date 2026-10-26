@@ -1,7 +1,8 @@
 
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
-
+const registerGroupChatHandlers =
+  require("./socket/groupChat.js");
 let io;
 
 
@@ -61,34 +62,26 @@ const initializeSocket = (server) => {
   });
 
   io.on("connection", (socket) => {
+  
 
-    console.log(
-      `Socket connected: ${socket.userId}`
-    );
+  // Keep the authenticated user's ID consistent.
+  socket.data.userId = socket.userId;
 
+  // Join the private user room.
+  const userRoom = `user:${socket.userId}`;
+  socket.join(userRoom);
 
-    // Every user joins their private room
-    const userRoom = `user:${socket.userId}`;
+ 
 
-    socket.join(userRoom);
+  // Register group chat events for this socket.
+  registerGroupChatHandlers(io, socket);
 
-
-    console.log(
-      `User joined room: ${userRoom}`
-    );
-
-    socket.on("disconnect", (reason) => {
-
-      console.log(
-        `Socket disconnected: ${socket.userId}`,
-        reason
-      );
-
-    });
+  socket.on("disconnect", (reason) => {
+   
   });
+});
 
 
-  console.log("Socket.IO initialized");
 
   return io;
 };
