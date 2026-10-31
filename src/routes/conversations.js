@@ -16,25 +16,18 @@ router.post(
   verifyToken,
   asyncHandler(async (req, res) => {
     const currentUserId = req.user.id;
-
-    // Accept recipientId from Flutter, or userId if sent by another client.
     const userId = req.body.recipientId || req.body.userId;
 
-    // 1. Validate the recipient ID
+    // 1. Validate recipient ID
     if (!userId) {
       return res.status(400).json({
         message: "recipientId is required",
       });
     }
 
-    if (currentUserId.toString() === userId.toString()) {
-      return res.status(400).json({
-        message: "You cannot create a conversation with yourself",
-      });
-    }
-
-    // 2. Get both users BEFORE accessing their properties
+    // 2. Get both users
     const currentUser = await User.findById(currentUserId);
+
     if (!currentUser) {
       return res.status(404).json({
         message: "Current user not found",
@@ -42,13 +35,14 @@ router.post(
     }
 
     const otherUser = await User.findById(userId);
+
     if (!otherUser) {
       return res.status(404).json({
         message: "User not found",
       });
     }
 
-    // 3. Check whether either user has blocked the other
+    // 3. Check blocked users
     const currentUserBlockedOther =
       (currentUser.blockedUsers || []).some(
         (id) => id.toString() === otherUser._id.toString()
@@ -65,14 +59,13 @@ router.post(
       });
     }
 
-    // 4. Both users must belong to a residence
+    // 4. Check residence
     if (!currentUser.residence || !otherUser.residence) {
       return res.status(400).json({
         message: "Both users must belong to a residence",
       });
     }
 
-    // 5. Users must belong to the same residence
     if (
       currentUser.residence.toString() !==
       otherUser.residence.toString()
@@ -82,22 +75,49 @@ router.post(
       });
     }
 
-    // 6. Check whether a conversation already exists
-    let conversation = await Conversation.findOne({
-      residence: currentUser.residence,
-      participants: {
-        $all: [currentUser._id, otherUser._id],
-        $size: 2,
-      },
-    }).populate("participants", "-password");
+    // 5. Determine whether this is a self-chat
+    const isSelfChat =
+      currentUser._id.toString() === otherUser._id.toString();
 
+    // 6. Find existing conversation
+    let conversation;
+
+    if (isSelfChat) {
+      conversation = await Conversation.findOne({
+        residence: currentUser.residence,
+        participants: [currentUser._id, currentUser._id],
+      }).populate("participants", "-password");
+    } else {
+      conversation = await Conversation.findOne({
+        residence: currentUser.residence,
+        participants: {
+          $all: [currentUser._id, otherUser._id],
+          $size: 2,
+        },
+      }).populate("participants", "-password");
+    }
+
+    // 7. Debug information
+    console.log("[CONVERSATION DEBUG]", {
+      currentUser: currentUser._id.toString(),
+      otherUser: otherUser._id.toString(),
+      isSelfChat,
+      foundConversation:
+        conversation?._id.toString() || "No existing conversation",
+      participants: conversation?.participants.map((user) => ({
+        id: user._id.toString(),
+        username: user.username,
+      })),
+    });
+
+    // 8. Return existing conversation
     if (conversation) {
       return res.status(200).json({
         conversation,
       });
     }
 
-    // 7. Create a new conversation
+    // 9. Create new conversation
     conversation = await Conversation.create({
       participants: [currentUser._id, otherUser._id],
       residence: currentUser.residence,
@@ -108,12 +128,19 @@ router.post(
       "-password"
     );
 
+    console.log("[CONVERSATION CREATED]", {
+      id: conversation._id.toString(),
+      participants: conversation.participants.map((user) => ({
+        id: user._id.toString(),
+        username: user.username,
+      })),
+    });
+
     return res.status(201).json({
       conversation,
     });
   })
 );
-
 
 // GET MY CONVERSATIONS
 router.get(

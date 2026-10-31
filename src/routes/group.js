@@ -80,6 +80,15 @@ router.post("/", verifyToken, async (req, res) => {
       ...new Set([req.user.id, ...requestedIds].map(String)),
     ].map((id) => new mongoose.Types.ObjectId(id));
 
+   const uniqueMemberIds = [
+  ...new Set(memberIds.map((id) => id.toString())),
+];
+
+if (uniqueMemberIds.length < 3) {
+  return res.status(400).json({
+    message: "A group must have at least 3 members.",
+  });
+}
     const users = await User.find({
       _id: { $in: memberIds },
     }).select("_id residence blockedUsers username");
@@ -198,7 +207,11 @@ router.get("/:groupId/messages", verifyToken, async (req, res) => {
         message: "You do not have access to this group.",
       });
     }
-
+if (group.members.length < 3) {
+  return res.status(403).json({
+    message: "This group needs at least 3 members to open its chat.",
+  });
+}
     const limit = Math.min(
       Math.max(parseInt(req.query.limit, 10) || 30, 1),
       100
@@ -277,12 +290,11 @@ router.post("/:groupId/members", verifyToken, async (req, res) => {
     if (!group || !isGroupMember(group, currentUser._id)) {
       return res.status(404).json({ message: "Group not found." });
     }
-
-    if (!isGroupAdmin(group, currentUser._id)) {
-      return res.status(403).json({
-        message: "Only group admins can add members.",
-      });
-    }
+if (!sameId(group.createdBy, currentUser._id)) {
+  return res.status(403).json({
+    message: "Only the group creator can add members.",
+  });
+}
 
     const uniqueIds = [...new Set(memberIds.map(String))];
 
@@ -312,7 +324,11 @@ router.post("/:groupId/members", verifyToken, async (req, res) => {
     const newUsers = users.filter(
       (user) => !existingIds.has(user._id.toString())
     );
-
+if (group.members.length < 3) {
+  return res.status(400).json({
+    message: "This group must have at least 3 members.",
+  });
+}
     if (newUsers.length === 0) {
       return res.status(400).json({
         message: "All selected students are already members.",
@@ -430,5 +446,124 @@ router.delete('/:groupId/leave', verifyToken, async (req, res) => {
   }
 });
 
+// REMOVE MEMBER — only the group creator can do this.
+router.delete("/:groupId/members/:memberId", verifyToken, async (req, res) => {
+  try {
+    const { groupId, memberId } = req.params;
+
+    if (
+      !mongoose.Types.ObjectId.isValid(groupId) ||
+      !mongoose.Types.ObjectId.isValid(memberId)
+    ) {
+      return res.status(400).json({
+        message: "Invalid group or member ID.",
+      });
+    }
+
+    const currentUser = await getCurrentUser(req.user.id);
+
+    if (!currentUser) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const group = await Group.findOne({
+      _id: groupId,
+      residence: currentUser.residence,
+    });
+
+    if (!group) {
+      return res.status(404).json({ message: "Group not found." });
+    }
+
+    if (!sameId(group.createdBy, currentUser._id)) {
+      return res.status(403).json({
+        message: "Only the group creator can remove members.",
+      });
+    }
+
+    if (sameId(memberId, group.createdBy)) {
+      return res.status(400).json({
+        message: "The group creator cannot be removed.",
+      });
+    }
+
+    if (!isGroupMember(group, memberId)) {
+      return res.status(404).json({
+        message: "This student is not a member of the group.",
+      });
+    }
+
+    if (group.members.length <= 3) {
+      return res.status(400).json({
+        message: "A group must have at least 3 members.",
+      });
+    }
+
+    group.members = group.members.filter(
+      (id) => !sameId(id, memberId)
+    );
+
+    group.admins = group.admins.filter(
+      (id) => !sameId(id, memberId)
+    );
+
+    await group.save();
+
+    const updatedGroup = await Group.findById(group._id)
+      .populate("members", "username profilePicture")
+      .populate("admins", "username profilePicture")
+      .populate("createdBy", "username profilePicture");
+
+    return res.json({
+      message: "Member removed successfully.",
+      group: updatedGroup,
+    });
+  } catch (error) {
+    console.error("[GROUP REMOVE MEMBER]", error);
+
+    return res.status(500).json({
+      message: "Could not remove group member.",
+    });
+  }
+});
+
+// GET GROUP DETAILS
+router.get("/:groupId", verifyToken, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(groupId)) {
+      return res.status(400).json({ message: "Invalid group ID." });
+    }
+
+    const currentUser = await getCurrentUser(req.user.id);
+
+    if (!currentUser) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const group = await Group.findOne({
+      _id: groupId,
+      members: currentUser._id,
+      residence: currentUser.residence,
+    })
+      .populate("members", "username profilePicture")
+      .populate("createdBy", "username profilePicture");
+
+    if (!group) {
+      return res.status(404).json({
+        message: "Group not found.",
+      });
+    }
+
+    return res.json({ group });
+  } catch (error) {
+    console.error("[GROUP DETAILS]", error);
+
+    return res.status(500).json({
+      message: "Could not load group details.",
+    });
+  }
+});
 
 module.exports = router;

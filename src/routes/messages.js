@@ -1,9 +1,6 @@
-
 const express = require("express");
 const router = express.Router();
-
 const asyncHandler = require("express-async-handler");
-
 const Message = require("../models/Message.js");
 const Conversation = require("../models/Conversation.js");
 const { User } = require("../models/User.js");
@@ -44,8 +41,8 @@ router.post(
 
   
     const receiver = conversation.participants.find(
-      (userId) => userId.toString() !== req.user.id
-    );
+  (userId) => userId.toString() !== req.user.id
+) || conversation.participants[0];
 
     if (!receiver) {
       return res.status(400).json({
@@ -97,12 +94,14 @@ router.post(
       .populate("sender", "username profilePicture")
       .populate("receiver", "username profilePicture");
 
-    await notifyMessage({
-      recipient: receiver,
-      sender: req.user.id,
-      conversation: conversation._id,
-      message: message._id
-    });
+   if (receiver.toString() !== req.user.id.toString()) {
+  await notifyMessage({
+    recipient: receiver,
+    sender: req.user.id,
+    conversation: conversation._id,
+    message: message._id
+  });
+}
 
     res.status(201).json(populatedMessage);
   })
@@ -221,5 +220,52 @@ router.delete(
   })
 );
 
+
+// EDIT MESSAGE
+// PUT /api/messages/:id
+
+router.put(
+  "/:id",
+  verifyToken,
+  asyncHandler(async (req, res) => {
+    const { content } = req.body;
+
+    if (typeof content !== "string" || !content.trim()) {
+      return res.status(400).json({
+        message: "Message content cannot be empty",
+      });
+    }
+
+    if (content.trim().length > 5000) {
+      return res.status(400).json({
+        message: "Message cannot exceed 5000 characters",
+      });
+    }
+
+    const message = await Message.findById(req.params.id);
+
+    if (!message) {
+      return res.status(404).json({
+        message: "Message not found",
+      });
+    }
+
+    // Only the sender can edit their message.
+    if (message.sender.toString() !== req.user.id) {
+      return res.status(403).json({
+        message: "You can only edit your own messages",
+      });
+    }
+
+    message.content = content.trim();
+    await message.save();
+
+    const updatedMessage = await Message.findById(message._id)
+      .populate("sender", "username profilePicture")
+      .populate("receiver", "username profilePicture");
+
+    res.status(200).json(updatedMessage);
+  })
+);
 
 module.exports = router;

@@ -53,19 +53,33 @@ console.log("[GROUP SOCKET] Handlers registered:", {
       }
 
       const group = await Group.findOne({
-        _id: groupId,
-        members: user._id,
-        residence: user.residence,
-      }).select("_id");
+  _id: groupId,
+  members: user._id,
+  residence: user.residence,
+});
 
-      if (!group) {
-        socket.emit("group:error", {
-          message: "You do not have access to this group.",
-        });
-        return;
-      }
+if (!group) {
+  socket.emit("group:error", {
+    message: "You do not have access to this group.",
+  });
+  return;
+}
 
-    // Actually join the Socket.IO room.
+// Require at least 3 members to join the chat.
+if (group.members.length < 3) {
+  socket.emit("group:error", {
+    message: "This group needs at least 3 members to open its chat.",
+  });
+  return;
+}
+
+if (group.members.length < 3) {
+  socket.emit("group:error", {
+    message: "This group needs at least 3 members to send messages.",
+  });
+  return;
+}
+    
 await socket.join(`group:${group._id}`);
 
 console.log(

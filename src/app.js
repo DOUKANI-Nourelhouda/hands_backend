@@ -69,4 +69,6 @@ app.use((err, req, res, next) => {
 
 
 initializeSocket(server);
-server.listen(process.env.PORT,"0.0.0.0", ()=> {console.log(`server is running on port ${process.env.PORT  || 5000}`)});
+server.listen(process.env.PORT,"0.0.0.0", ()=> {console.log(`server is running on port ${process.env.PORT  || 5000}`)
+,console.log("SERVER TIME:", new Date().toISOString());
+console.log("SERVER TIMESTAMP:", Math.floor(Date.now() / 1000));});
