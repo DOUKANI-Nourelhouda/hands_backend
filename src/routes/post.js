@@ -513,7 +513,7 @@ router.get(
 
     // PAGINATION
     let page = parseInt(req.query.page) || 1;
-    let limit = parseInt(req.query.limit) || 10;
+    let limit = parseInt(req.query.limit) || 50;
 
     if (page < 1) page = 1;
     if (limit < 1) limit = 10;
