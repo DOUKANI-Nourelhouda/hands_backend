@@ -26,7 +26,12 @@ app.use(
     type: "application/json",
   })
 );
-
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "OK",
+    message: "Hands backend is running",
+  });
+});
 app.use(express.json());
 
 app.use(logger);
@@ -67,8 +72,11 @@ app.use((err, req, res, next) => {
     });
 });
 
+const io = initializeSocket(server);
 
-initializeSocket(server);
+app.set("io", io);
+
+console.log("[SOCKET.IO] Initialized and registered with Express");
 server.listen(process.env.PORT,"0.0.0.0", ()=> {console.log(`server is running on port ${process.env.PORT  || 5000}`)
 ,console.log("SERVER TIME:", new Date().toISOString());
 console.log("SERVER TIMESTAMP:", Math.floor(Date.now() / 1000));});

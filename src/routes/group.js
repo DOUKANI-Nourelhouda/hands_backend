@@ -369,6 +369,155 @@ if (group.members.length < 3) {
   }
 });
 
+// EDIT GROUP MESSAGE — only the original sender can edit.
+router.put("/:groupId/messages/:messageId", verifyToken, async (req, res) => {
+  try {
+    const { groupId, messageId } = req.params;
+    const text = typeof req.body.text === "string"
+      ? req.body.text.trim()
+      : "";
+
+    if (
+      !mongoose.Types.ObjectId.isValid(groupId) ||
+      !mongoose.Types.ObjectId.isValid(messageId)
+    ) {
+      return res.status(400).json({
+        message: "Invalid group or message ID.",
+      });
+    }
+
+    if (!text || text.length > 5000) {
+      return res.status(400).json({
+        message: "Message must contain between 1 and 5000 characters.",
+      });
+    }
+
+    const currentUser = await getCurrentUser(req.user.id);
+
+    if (!currentUser) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const group = await Group.findOne({
+      _id: groupId,
+      members: currentUser._id,
+      residence: currentUser.residence,
+    });
+
+    if (!group) {
+      return res.status(403).json({
+        message: "You do not have access to this group.",
+      });
+    }
+
+    const message = await GroupMessage.findOne({
+      _id: messageId,
+      group: group._id,
+      sender: currentUser._id,
+    });
+
+    if (!message) {
+      return res.status(404).json({
+        message: "Message not found or you cannot edit it.",
+      });
+    }
+
+    message.text = text;
+    await message.save();
+
+    const updatedMessage = await GroupMessage.findById(message._id)
+      .populate("sender", "username profilePicture")
+      .lean();
+
+      const io = req.app.get("io");
+
+io.to(`group:${group._id}`).emit(
+  "group:message:updated",
+  updatedMessage
+);
+
+    return res.status(200).json({
+      message: "Message updated successfully.",
+      updatedMessage,
+    });
+  } catch (error) {
+    console.error("[GROUP EDIT MESSAGE]", error);
+
+    return res.status(500).json({
+      message: "Could not edit group message.",
+    });
+  }
+});
+
+
+// DELETE GROUP MESSAGE — only the original sender can delete.
+router.delete("/:groupId/messages/:messageId", verifyToken, async (req, res) => {
+  try {
+    const { groupId, messageId } = req.params;
+
+    if (
+      !mongoose.Types.ObjectId.isValid(groupId) ||
+      !mongoose.Types.ObjectId.isValid(messageId)
+    ) {
+      return res.status(400).json({
+        message: "Invalid group or message ID.",
+      });
+    }
+
+    const currentUser = await getCurrentUser(req.user.id);
+
+    if (!currentUser) {
+      return res.status(404).json({
+        message: "User not found.",
+      });
+    }
+
+    const group = await Group.findOne({
+      _id: groupId,
+      members: currentUser._id,
+      residence: currentUser.residence,
+    });
+
+    if (!group) {
+      return res.status(403).json({
+        message: "You do not have access to this group.",
+      });
+    }
+
+    const deletedMessage = await GroupMessage.findOneAndDelete({
+      _id: messageId,
+      group: group._id,
+      sender: currentUser._id,
+    });
+
+    if (!deletedMessage) {
+      return res.status(404).json({
+        message: "Message not found or you cannot delete it.",
+      });
+    }
+const io = req.app.get("io");
+
+io.to(`group:${group._id}`).emit(
+  "group:message:deleted",
+  {
+    groupId: group._id.toString(),
+    messageId: deletedMessage._id.toString(),
+  }
+);
+    return res.status(200).json({
+      message: "Message deleted successfully.",
+      messageId: deletedMessage._id,
+    });
+  } catch (error) {
+    console.error("[GROUP DELETE MESSAGE]", error);
+
+    return res.status(500).json({
+      message: "Could not delete group message.",
+    });
+  }
+});
 router.delete('/:groupId/leave', verifyToken, async (req, res) => {
   try {
     const { groupId } = req.params;

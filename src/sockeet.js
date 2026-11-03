@@ -79,12 +79,13 @@ const initializeSocket = (server) => {
   socket.on("disconnect", (reason) => {
    
   });
+
+  
 });
 
 
-
-  return io;
-};
+ return io;
+}
 
 const getIO = () => {
 
