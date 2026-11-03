@@ -8,7 +8,7 @@ dns.setServers([
 const express = require ('express'); 
 const dotenv = require('dotenv');
 const logger = require('./middlewares/logger');
-dotenv.config({ override: true });
+dotenv.config();
 console.log("MONGO_URI exists:", !!process.env.MONGO_URI);
 console.log("MONGO_URI starts with:", process.env.MONGO_URI?.substring(0, 15));
 const http = require("http");
@@ -38,7 +38,7 @@ app.use(logger);
 // helmet make the back more secure
 app.use(helmet());
 // only this domain can use the routes but if u dont want to select just put *
-app.use(cors({  origin:"http://localhost:5000"}));
+app.use(cors({ }));
 const server = http.createServer(app);
 //routez
 const residenceRouter = require('./routes/residence.js');
