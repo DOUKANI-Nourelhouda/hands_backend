@@ -83,14 +83,9 @@
     "gender": "unknown",
     "active": true
   },
+  
   {
-    "name": "RU BAB EZZOUAR 5",
-    "wilaya": "Alger",
-    "gender": "unknown",
-    "active": true
-  },
-  {
-    "name": "RU 19 MAI 1956",
+    "name": "RU 19 MAI 1956 - RU BAB EZZOUAR 5",
     "wilaya": "Alger",
     "gender": "unknown",
     "active": true
