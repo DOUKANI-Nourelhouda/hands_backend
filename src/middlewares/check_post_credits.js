@@ -11,14 +11,14 @@ const checkPostCredits = async (req, res, next) => {
     }
 
     // First 3 posts are free
-    if (user.freePostsUsed < 3) {
+    if (user.freePostsUsed < 300) {
       req.postPaymentType = "free";
       req.currentUser = user;
 
       return next();
     }
 
-    // After the first 3, use purchased credits
+    // After the first 300, use purchased credits
     if (user.paidPostCredits > 0) {
       req.postPaymentType = "paid_credit";
       req.currentUser = user;
@@ -28,7 +28,7 @@ const checkPostCredits = async (req, res, next) => {
 
     
     return res.status(402).json({
-      message: "You have used your 3 free posts. Please purchase a post package.",
+      message: "You have used your 300 free posts. Please purchase a post package.",
       code: "POST_PAYMENT_REQUIRED",
     });
   } catch (error) {

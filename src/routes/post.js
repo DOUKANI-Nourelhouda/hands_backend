@@ -146,9 +146,9 @@ const getPagination = (req) => {
     limit = 10;
   }
 
-  // Maximum 30 posts per request
-  if (limit > 30) {
-    limit = 30;
+  // Maximum 50 posts per request
+  if (limit > 50) {
+    limit = 50;
   }
 
   const skip = (page - 1) * limit;
@@ -376,7 +376,7 @@ if (
       });
     }
 
-    const FREE_POST_LIMIT = 3;
+    const FREE_POST_LIMIT = 300;
 
     let postType;
 
@@ -517,7 +517,7 @@ router.get(
 
     if (page < 1) page = 1;
     if (limit < 1) limit = 10;
-    if (limit > 30) limit = 30;
+    if (limit > 50) limit = 50;
 
     const skip = (page - 1) * limit;
 

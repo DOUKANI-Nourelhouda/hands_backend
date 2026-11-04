@@ -19,7 +19,7 @@ const getPagination = (req) => {
 
   if (page < 1) page = 1;
   if (limit < 1) limit = 10;
-  if (limit > 30) limit = 30;
+  if (limit > 50) limit = 50;
 
   return {
     page,

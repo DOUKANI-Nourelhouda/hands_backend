@@ -34,7 +34,7 @@ router.get("/credits", verifyToken, async (req, res) => {
       });
     }
 
-    const FREE_POST_LIMIT = 3;
+    const FREE_POST_LIMIT = 300;
 
     return res.status(200).json({
       freePostsRemaining: Math.max(
@@ -87,7 +87,7 @@ router.get(
   verifyToken,
   async (req, res) => {
     try {
-      const FREE_POST_LIMIT = 3;
+      const FREE_POST_LIMIT = 300;
 
       const user = await User.findById(req.user.id).select(
         "freePostsUsed paidPostCredits"
