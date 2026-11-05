@@ -109,31 +109,16 @@ router.get(
 
 
     // Get notifications
-    const notifications =
-      await Notification.find(filter)
-        .populate(
-          "sender",
-          "username profilePicture"
-        )
-        .populate(
-          "post",
-          "caption picture"
-        )
-        .populate(
-          "comment",
-          "text"
-        )
-        .populate(
-          "conversation"
-        )
-        .sort({
-          createdAt: -1,
-        })
-        .skip(skip)
-        .limit(limit)
-        .lean();
-
-
+   const notifications = await Notification.find(filter)
+  .populate("sender", "username profilePicture")
+  .populate("post", "caption picture")
+  .populate("comment", "text")
+  .populate("conversation")
+  .populate("message")
+  .sort({ createdAt: -1 })
+  .skip(skip)
+  .limit(limit)
+  .lean();
     const totalPages =
       Math.ceil(totalNotifications / limit);
 
