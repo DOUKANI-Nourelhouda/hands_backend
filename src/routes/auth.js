@@ -41,76 +41,53 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+transporter.verify()
+  .then(() => {
+    console.log("[EMAIL] SMTP connection successful!");
+  })
+  .catch((error) => {
+    console.error("[EMAIL] SMTP connection failed:", error);
+  });
+
 // SEND VERIFICATION EMAIL FUNCTION
 async function sendVerificationEmail(user) {
-
   console.log("SENDING VERIFICATION EMAIL TO:", user.email);
 
   const token = jwt.sign(
-    {
-      id: user._id,
-    },
+    { id: user._id },
     process.env.JWT_SECRET,
-    {
-      expiresIn: "10m",
-    }
+    { expiresIn: "10m" }
   );
 
   const link =
     `${process.env.BASE_URL}/api/auth/verify-email/${user._id}/${token}`;
 
   try {
-
     const info = await transporter.sendMail({
-
-      from: process.env.EMAIL,
-
+      from: `"Hands" <${process.env.EMAIL}>`,
       to: user.email,
-
-      subject: "Verify your account",
-
+      subject: "Verify your Hands account",
       html: `
-        <h3>Welcome!</h3>
-
-        <p>
-          Thank you for creating your account.
-        </p>
-
-        <p>
-          Please verify your email address by clicking the button below:
-        </p>
-
-        <a
-          href="${link}"
-          style="
-            display:inline-block;
-            padding:12px 20px;
-            background:#fcc001;
-            color:white;
-            text-decoration:none;
-            border-radius:6px;
-          "
-        >
+        <h3>Welcome to Hands!</h3>
+        <p>Thank you for creating your account.</p>
+        <p>Please click below to verify your email:</p>
+        <a href="${link}"
+           style="display:inline-block;padding:12px 20px;
+           background:#fcc001;color:white;text-decoration:none;
+           border-radius:6px;">
           Verify Email
         </a>
-
-        <p>
-          This link will expire in 10 minutes.
-        </p>
+        <p>This link expires in 10 minutes.</p>
       `,
     });
 
-    console.log("Verification email sent:", info.response);
-
-  } catch (err) {
-
-    console.error(
-      "Verification email sending failed:",
-      err
-    );
+    console.log("[EMAIL] Successfully sent:", info.messageId);
+    return info;
+  } catch (error) {
+    console.error("[EMAIL] Sending failed:", error.message);
+    throw error;
   }
 }
-
 // SEND RESET PASSWORD EMAIL FUNCTION
 async function sendResetPasswordEmail(user) {
 
