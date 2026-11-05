@@ -13,7 +13,6 @@ const Residence = require("../models/Residence.js");
 
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
 const { OAuth2Client } = require("google-auth-library");
 
 const {
@@ -30,24 +29,44 @@ const client = new OAuth2Client(
 );
 
 
-// EMAIL TRANSPORTER
-const transporter = nodemailer.createTransport({
-  host: "smtp-relay.brevo.com",
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.BREVO_LOGIN,
-    pass: process.env.BREVO_SMTP_KEY,
-  },
-});
 
-transporter.verify()
-  .then(() => {
-    console.log("[EMAIL] SMTP connection successful!");
-  })
-  .catch((error) => {
-    console.error("[EMAIL] SMTP connection failed:", error);
-  });
+// SEND EMAIL USING BREVO HTTP API
+async function sendEmail({ to, subject, html }) {
+  const response = await fetch(
+    "https://api.brevo.com/v3/smtp/email",
+    {
+      method: "POST",
+      headers: {
+        "accept": "application/json",
+        "api-key": process.env.BREVO_API_KEY,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sender: {
+          name: "Hands",
+          email: process.env.EMAIL,
+        },
+        to: [{ email: to }],
+        subject,
+        htmlContent: html,
+      }),
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error("[BREVO API ERROR]", data);
+
+    throw new Error(
+      data.message || "Failed to send email"
+    );
+  }
+
+  console.log("[EMAIL] Successfully sent:", data.messageId);
+
+  return data;
+}
 
 // SEND VERIFICATION EMAIL FUNCTION
 async function sendVerificationEmail(user) {
@@ -63,24 +82,31 @@ async function sendVerificationEmail(user) {
     `${process.env.BASE_URL}/api/auth/verify-email/${user._id}/${token}`;
 
   try {
-    const info = await transporter.sendMail({
-      from: `"Hands" <${process.env.EMAIL}>`,
-      to: user.email,
-      subject: "Verify your Hands account",
-      html: `
-        <h3>Welcome to Hands!</h3>
-        <p>Thank you for creating your account.</p>
-        <p>Please click below to verify your email:</p>
-        <a href="${link}"
-           style="display:inline-block;padding:12px 20px;
-           background:#fcc001;color:white;text-decoration:none;
-           border-radius:6px;">
-          Verify Email
-        </a>
-        <p>This link expires in 10 minutes.</p>
-      `,
-    });
+    const info = await sendEmail({
+  to: user.email,
+  subject: "Verify your Hands account",
+  html: `
+    <h3>Welcome to Hands!</h3>
 
+    <p>Thank you for creating your account.</p>
+
+    <p>Please verify your email address:</p>
+
+    <a href="${link}"
+       style="
+         display:inline-block;
+         padding:12px 20px;
+         background:#fcc001;
+         color:white;
+         text-decoration:none;
+         border-radius:6px;
+       ">
+      Verify Email
+    </a>
+
+    <p>This link expires in 10 minutes.</p>
+  `,
+});
     console.log("[EMAIL] Successfully sent:", info.messageId);
     return info;
   } catch (error) {
@@ -103,45 +129,31 @@ async function sendResetPasswordEmail(user) {
 
   const link =
     `${process.env.BASE_URL}/api/auth/reset-password/${user._id}/${token}`;
+await sendEmail({
+  to: user.email,
+  subject: "Reset your Hands password",
+  html: `
+    <h3>Password Reset Request</h3>
 
-  await transporter.sendMail({
+    <p>We received a request to reset your password.</p>
 
-    from: process.env.EMAIL,
+    <p>Click below to choose a new password:</p>
 
-    to: user.email,
+    <a href="${link}"
+       style="
+         display:inline-block;
+         padding:12px 20px;
+         background:#fcc001;
+         color:white;
+         text-decoration:none;
+         border-radius:6px;
+       ">
+      Reset Password
+    </a>
 
-    subject: "Reset your password",
-
-    html: `
-      <h3>Password Reset Request</h3>
-
-      <p>
-        We received a request to reset your password.
-      </p>
-
-      <p>
-        Click the button below to choose a new password:
-      </p>
-
-      <a
-        href="${link}"
-        style="
-          display:inline-block;
-          padding:12px 20px;
-          background:#fcc001;
-          color:white;
-          text-decoration:none;
-          border-radius:6px;
-        "
-      >
-        Reset Password
-      </a>
-
-      <p>
-        This link will expire in 10 minutes.
-      </p>
-    `,
-  });
+    <p>This link expires in 10 minutes.</p>
+  `,
+});
 }
 
 // REGISTER
