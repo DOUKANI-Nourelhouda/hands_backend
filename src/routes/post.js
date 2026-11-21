@@ -448,8 +448,8 @@ if (
       const post = new Post({
         category,
         caption,
-       media,
-picture: media.find((item) => item.type === "image")?.url || "",
+        media,
+        picture: media.find((item) => item.type === "image")?.url || "",
         user: user._id,
         residence: user.residence,
         likes: [],
@@ -1150,22 +1150,16 @@ router.delete("/:id/like", verifyToken, asyncHandler(async (req, res) => {
 
 // GET COMMENTS WITH REPLIES
 // GET /api/posts/:id/comments
+
+// GET COMMENTS WITH REPLIES
+// GET /api/posts/:id/comments
+
 router.get(
   "/:id/comments",
   verifyToken,
   asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user.id);
 
-    if (!user) {
-      return res.status(404).json({
-        message: "User not found",
-      });
-    }
-
-    const post = await Post.findOne({
-      _id: req.params.id,
-      residence: user.residence,
-    });
+    const post = await Post.findById(req.params.id);
 
     if (!post) {
       return res.status(404).json({
@@ -1173,16 +1167,16 @@ router.get(
       });
     }
 
-    // Get all comments and replies for this post
+    // Get all comments belonging to this post.
+    // Do not filter by the user's current residence.
     const allComments = await Comment.find({
       post: post._id,
-      residence: user.residence,
     })
       .populate("user", "username profilePicture")
       .sort({ createdAt: 1 })
       .lean();
 
-    // Keep only top-level comments and attach their replies
+    // Keep only top-level comments and attach replies.
     const comments = allComments
       .filter((comment) => !comment.parentComment)
       .map((comment) => ({
@@ -1201,6 +1195,7 @@ router.get(
     });
   })
 );
+
 
 // ADD COMMENT
 // POST /api/posts/:id/comments
