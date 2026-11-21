@@ -664,10 +664,9 @@ router.put(
     // Make sure the post belongs to the current user
     // and is from the same residence.
     const post = await Post.findOne({
-      _id: req.params.id,
-      user: user._id,
-      residence: user.residence,
-    });
+  _id: req.params.id,
+  user: user._id,
+});
 
     if (!post) {
       return res.status(404).json({
@@ -749,12 +748,10 @@ router.delete(
         });
       }
 
-      const post = await Post.findOne({
-        _id: req.params.id,
-        user: user._id,
-        residence: user.residence,
-      }).session(session);
-
+     const post = await Post.findOne({
+  _id: req.params.id,
+  user: user._id,
+}).session(session);
       if (!post) {
         await session.abortTransaction();
 
@@ -1226,7 +1223,7 @@ router.post("/:id/comments", verifyToken, asyncHandler(async (req, res) => {
 
   const post = await Post.findOne({
     _id: req.params.id,
-    residence: user.residence,
+   residence: post.residence,
   });
 
   if (!post) {
